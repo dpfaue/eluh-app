@@ -1,5 +1,5 @@
 /* ELUH App – Service Worker: hält die App komplett offline verfügbar */
-var VERSION = 'eluh-v2.0.0';
+var VERSION = 'eluh-v2.0.1';
 var FILES = [
   './', 'index.html', 'app.css', 'app.js', 'store.js', 'pdfgen.js', 'config.js',
   'pdf-lib.min.js', 'pdf.min.js', 'pdf.worker.min.js', 'vorlage-arbeitsauftrag.pdf',

@@ -377,9 +377,11 @@
       $$('#filters [data-r]').forEach(function (b) { b.onclick = function () { listState.range = b.getAttribute('data-r'); drawChips(); draw(); }; });
     }
     var visible = [];
+    var me = current;
     async function draw() {
       var list = await S.Auftraege.all();
       var ops = await S.Outbox.all();
+      if (current !== me || !$('#list')) return;
       var today = S.isoDate(new Date());
       var minDate = listState.range === 'alle' ? '' : listState.range === 'heute' ? today : S.isoDate(new Date(Date.now() - Number(listState.range) * 864e5));
       var rows = [];
@@ -655,6 +657,7 @@
       bar.innerHTML =
         '<button class="btn" id="preview">' + ICONS.print + '<span>PDF / Drucken</span></button>' + primary;
       var extra = $('#edExtra');
+      if (!extra) return;
       extra.innerHTML = '<button class="btn ghost small" id="dup">Als neuen Auftrag kopieren</button>' +
         '<button class="btn ghost danger small" id="del">Auftrag löschen</button>';
       $('#preview').onclick = async function () { await S.Auftraege.save(rec); showAuftragPdf([rec]); };
@@ -786,9 +789,11 @@
       '<div class="stack"><label class="search">' + ICONS.search + '<input class="input" id="cq" type="search" placeholder="Kunde, Straße, Ort…" value="' + esc(custState.q) + '"></label>' +
       '<div class="chips"><button class="chip" data-s="name">A–Z</button><button class="chip" data-s="recent">Zuletzt geändert</button><button class="chip" data-s="offline">Offline verfügbar</button></div>' +
       '<div id="clist"></div></div>';
+    var me = current;
     async function draw() {
       var idx = await S.Index.load();
       var s = await S.Settings.get();
+      if (current !== me || !$('#idxInfo')) return;
       var off = new Set(s.offlineCustomers || []);
       var st = S.Index.stats(idx);
       $('#idxInfo').textContent = idx.v ? st.customers + ' Kunden · ' + st.files + ' Dateien · Stand ' + fmtDT(idx.v) : '';
@@ -826,6 +831,7 @@
   // Ordner / Kunde
   // ------------------------------------------------------------------
   route(/^#\/ordner\/([^/]+)$/, async function (folderId) {
+    var me = current;
     async function draw() {
       var idx = await S.Index.load();
       var realId = await S.IdMap.resolve(folderId);
@@ -851,6 +857,7 @@
           .sort(function (a, b) { return auftragDate(b).localeCompare(auftragDate(a)); });
       }
       var custOffline = customer && off.has(customer.id);
+      if (current !== me) return;
       view.innerHTML =
         '<nav class="breadcrumb"><a href="#/kunden">Kundendatenbank</a>' + crumbs.map(function (c) {
           return '<span class="sep">›</span><a href="#/ordner/' + encodeURIComponent(c.id) + '">' + esc(c.name.trim()) + '</a>';
@@ -926,6 +933,7 @@
   // Sync & Einstellungen
   // ------------------------------------------------------------------
   route(/^#\/sync$/, async function () {
+    var me = current;
     async function draw() {
       var s = await S.Settings.get();
       var st = S.Sync.state;
@@ -938,6 +946,7 @@
       var opLabel = { createCustomer: 'Kundenordner anlegen', createFolder: 'Ordner anlegen', upload: 'Datei hochladen', fileAuftrag: 'Auftrag ablegen' };
       var auftragNames = {};
       (await S.Auftraege.all()).forEach(function (a) { auftragNames[a.id] = auftragTitle(a); });
+      if (current !== me) return;
       view.innerHTML =
         '<div class="page-head"><h1>Synchronisierung</h1>' +
         '<button class="btn primary" id="syncNow"' + (st.running ? ' disabled' : '') + '>' + (st.running ? '<span class="spinner"></span> ' + esc(st.phase || 'Läuft') + '…' : 'Jetzt synchronisieren') + '</button></div>' +
