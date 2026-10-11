@@ -9,13 +9,14 @@
   function openDb() {
     if (dbPromise) return dbPromise;
     dbPromise = new Promise(function (resolve, reject) {
-      var req = indexedDB.open('eluh-app', 1);
+      var req = indexedDB.open('eluh-app', 2);
       req.onupgradeneeded = function () {
         var d = req.result;
         if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv');
         if (!d.objectStoreNames.contains('auftraege')) d.createObjectStore('auftraege', { keyPath: 'id' });
         if (!d.objectStoreNames.contains('files')) d.createObjectStore('files', { keyPath: 'id' });
         if (!d.objectStoreNames.contains('outbox')) d.createObjectStore('outbox', { keyPath: 'id' });
+        if (!d.objectStoreNames.contains('thumbs')) d.createObjectStore('thumbs', { keyPath: 'id' });
       };
       req.onsuccess = function () { resolve(req.result); };
       req.onerror = function () { reject(req.error); };
@@ -212,6 +213,15 @@
     }
   };
 
+  /** "9.10.2026 - Wartung" → 20261009, "2026" → 20260000 (für Sortierung) */
+  function dateKey(name) {
+    var n = String(name || '').trim();
+    var m = /^(\d{1,2})\.(\d{1,2})\.(\d{4})/.exec(n);
+    if (m) return Number(m[3]) * 10000 + Number(m[2]) * 100 + Number(m[1]);
+    if (/^(19|20)\d{2}$/.test(n)) return Number(n) * 10000;
+    return 0;
+  }
+
   function buildChildren(idx) {
     var ch = {};
     function add(map) {
@@ -226,6 +236,8 @@
       ch[p].sort(function (a, b) {
         var ra = idx.items[a] || idx.local[a], rb = idx.items[b] || idx.local[b];
         if (ra[2] !== rb[2]) return rb[2] - ra[2];
+        var da = dateKey(ra[1]), db = dateKey(rb[1]);
+        if (da && db && da !== db) return db - da; // Termine/Jahre: neueste zuerst
         return String(ra[1]).localeCompare(String(rb[1]), 'de', { numeric: true, sensitivity: 'base' });
       });
     });
@@ -247,7 +259,7 @@
   var Auftraege = {
     all: async function () {
       var list = await DB.all('auftraege');
-      return list.filter(function (a) { return !a.deleted; });
+      return list.filter(function (a) { return !a.deleted && a.kind !== 'profile'; });
     },
     get: function (id) { return DB.get('auftraege', id); },
     save: async function (rec) {
@@ -278,15 +290,72 @@
         },
         material: [],
         ablage: { datum: isoDate(today), art: '' },
-        drive: null
+        drive: null,
+        photos: [],
+        sig: {}
       };
       return Object.assign(rec, preset || {});
+    }
+  };
+
+  // Profil (wird wie ein Auftrag synchronisiert, z.B. gespeicherte Monteur-Unterschrift)
+  var Profile = {
+    get: async function () { return (await DB.get('auftraege', 'profile')) || { id: 'profile', kind: 'profile', updatedAt: 0 }; },
+    set: async function (patch) {
+      var p = Object.assign(await Profile.get(), patch);
+      return Auftraege.save(p);
     }
   };
 
   function isoDate(d) {
     var p = function (n) { return String(n).padStart(2, '0'); };
     return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+  }
+
+  // ------------------------------------------------------------------
+  // Bilder verkleinern (Fotos vor dem Hochladen, spart Datenvolumen + Drive-Speicher)
+  // ------------------------------------------------------------------
+  function loadImage(blob) {
+    return new Promise(function (resolve, reject) {
+      var url = URL.createObjectURL(blob);
+      var img = new Image();
+      img.onload = function () { URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('Bild nicht lesbar')); };
+      img.src = url;
+    });
+  }
+  async function shrinkImage(blob, maxPx, quality) {
+    if (!/^image\/(jpeg|jpg|png|heic|heif|webp)$/i.test(blob.type || '')) return blob;
+    try {
+      var img = await loadImage(blob);
+      var w = img.naturalWidth, h = img.naturalHeight;
+      var f = Math.min(1, maxPx / Math.max(w, h));
+      if (f >= 1 && /jpe?g/i.test(blob.type) && blob.size < 1.5e6) return blob;
+      var c = document.createElement('canvas');
+      c.width = Math.round(w * f); c.height = Math.round(h * f);
+      var ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      var out = await new Promise(function (r) { c.toBlob(r, 'image/jpeg', quality || 0.85); });
+      c.width = c.height = 0;
+      return out && out.size < blob.size ? out : blob;
+    } catch (e) { return blob; }
+  }
+  function photoName(prefix) {
+    var d = new Date(), p = function (n) { return String(n).padStart(2, '0'); };
+    return (prefix || 'Foto') + ' ' + d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + '-' + p(d.getMinutes()) + '-' + p(d.getSeconds()) + '.jpg';
+  }
+  /** Datei für den Upload vorbereiten: Fotos verkleinern, Kamera-Bilder sinnvoll benennen */
+  async function prepareUpload(file, opts) {
+    opts = opts || {};
+    var s = await Settings.get();
+    var isImg = /^image\//.test(file.type || '');
+    var name = file.name || 'Datei';
+    if (isImg && (opts.camera || /^image(\.\w+)?$/i.test(name) || /^IMG_\d+\.(heic|heif)$/i.test(name))) name = photoName('Foto');
+    if (!isImg || s.photoOriginal) return { blob: file, name: name, mime: file.type || 'application/octet-stream' };
+    var small = await shrinkImage(file, 2560, 0.85);
+    if (small !== file) name = name.replace(/\.(heic|heif|png|webp|jpeg|jpg)$/i, '') + '.jpg';
+    return { blob: small, name: name, mime: small.type || file.type };
   }
 
   // ------------------------------------------------------------------
@@ -313,7 +382,48 @@
         throw err;
       }
     },
+    /** Original immer frisch vom Server (z.B. wenn offline nur eine verkleinerte Kopie liegt) */
+    loadOriginal: async function (id) {
+      var rid = await IdMap.resolve(id);
+      var j = await api('getFile', { id: rid }, { timeout: 120000 });
+      return { id: rid, name: j.name, mime: j.mime, blob: base64ToBlob(j.data, j.mime) };
+    },
+    stats: async function () {
+      var st = await store('files');
+      return new Promise(function (resolve, reject) {
+        var out = { count: 0, bytes: 0, small: 0, saved: 0 };
+        var req = st.openCursor();
+        req.onsuccess = function () {
+          var c = req.result;
+          if (!c) return resolve(out);
+          var v = c.value;
+          out.count++; out.bytes += v.size || 0;
+          if (v.small) { out.small++; out.saved += Math.max(0, (v.origSize || 0) - (v.size || 0)); }
+          c.continue();
+        };
+        req.onerror = function () { reject(req.error); };
+      });
+    },
     clear: async function () { await DB.clear('files'); emit('files'); }
+  };
+
+  // ------------------------------------------------------------------
+  // Vorschaubilder (klein, für Ordneransichten)
+  // ------------------------------------------------------------------
+  var Thumbs = {
+    get: async function (id, modified) {
+      var t = await DB.get('thumbs', id);
+      if (t && (!modified || !t.modified || t.modified >= modified)) return t;
+      return null;
+    },
+    fetchFolder: async function (folderId) {
+      var j = await api('thumbs', { folderId: folderId, px: 240 }, { timeout: 60000 });
+      for (var i = 0; i < j.thumbs.length; i++) {
+        var t = j.thumbs[i];
+        await DB.put('thumbs', { id: t.id, modified: t.modified, blob: base64ToBlob(t.data, t.mime) });
+      }
+      return j.thumbs.length;
+    }
   };
 
   // ------------------------------------------------------------------
@@ -355,13 +465,35 @@
   }
 
   /** Datei in einen Ordner der Kundendatenbank hochladen (geht auch offline) */
-  async function uploadFile(parentId, file) {
+  async function uploadFile(parentId, file, opts) {
     var tmp = uid('tmp-');
-    await Files.put({ id: tmp, name: file.name, mime: file.type || 'application/octet-stream', blob: file, size: file.size, modified: Date.now(), cachedAt: Date.now() });
-    await Index.addLocal(tmp, [parentId, file.name, 0, file.type || 'application/octet-stream', file.size, Date.now()]);
-    await Outbox.add({ type: 'upload', tmpId: tmp, parentId: parentId, name: file.name, mime: file.type || 'application/octet-stream' });
+    var prep = await prepareUpload(file, opts);
+    await Files.put({ id: tmp, name: prep.name, mime: prep.mime, blob: prep.blob, size: prep.blob.size, modified: Date.now(), cachedAt: Date.now() });
+    await Index.addLocal(tmp, [parentId, prep.name, 0, prep.mime, prep.blob.size, Date.now()]);
+    await Outbox.add({ type: 'upload', tmpId: tmp, parentId: parentId, name: prep.name, mime: prep.mime });
     emit('index');
     return tmp;
+  }
+
+  /** Foto zum Auftrag: landet im selben Terminordner wie das Auftrags-PDF */
+  async function addAuftragPhoto(rec, file, opts) {
+    var prep = await prepareUpload(file, opts);
+    var tmp = uid('tmp-');
+    await Files.put({ id: tmp, name: prep.name, mime: prep.mime, blob: prep.blob, size: prep.blob.size, modified: Date.now(), cachedAt: Date.now() });
+    rec.photos = rec.photos || [];
+    rec.photos.push({ id: tmp, name: prep.name, mime: prep.mime, size: prep.blob.size, addedAt: Date.now() });
+    await Auftraege.save(rec);
+    await Outbox.add({ type: 'uploadPhoto', auftragId: rec.id, photoId: tmp });
+    return tmp;
+  }
+
+  async function removeAuftragPhoto(rec, photoId) {
+    rec.photos = (rec.photos || []).filter(function (p) { return p.id !== photoId; });
+    await Auftraege.save(rec);
+    var ops = await Outbox.all();
+    for (var i = 0; i < ops.length; i++) {
+      if (ops[i].type === 'uploadPhoto' && ops[i].photoId === photoId) { await Outbox.remove(ops[i].id); await DB.del('files', photoId); }
+    }
   }
 
   /** Auftrag als PDF beim Kunden ablegen (wird beim nächsten Sync ausgeführt) */
@@ -408,6 +540,31 @@
       await Index.removeLocal(op.tmpId);
       return;
     }
+    if (op.type === 'uploadPhoto') {
+      var prec = await Auftraege.get(op.auftragId);
+      if (!prec || prec.deleted) { await DB.del('files', op.photoId); return; }
+      var ph = (prec.photos || []).filter(function (x) { return x.id === op.photoId; })[0];
+      if (!ph) return;
+      if (!prec.customerId && prec.status !== 'fertig') throw waitErr('Wartet auf Kundenauswahl im Auftrag');
+      var pc = await IdMap.resolve(prec.customerId);
+      if (pc && pc.indexOf('tmp-') === 0) throw waitErr();
+      var pf = await Files.get(op.photoId);
+      if (!pf) return;
+      var r5 = await api('uploadToPath', {
+        customerId: pc || null,
+        segments: pc ? window.PdfGen.folderSegments(prec) : [],
+        name: ph.name, mime: pf.mime, data: await blobToBase64(pf.blob)
+      }, { timeout: 180000 });
+      await IdMap.set(op.photoId, r5.fileId);
+      pf.id = r5.fileId;
+      await Files.put(pf);
+      await DB.del('files', op.photoId);
+      var fr = await Auftraege.get(prec.id);
+      (fr.photos || []).forEach(function (x) { if (x.id === op.photoId) { x.id = r5.fileId; x.fileId = r5.fileId; x.name = r5.name; x.path = r5.path; x.uploadedAt = Date.now(); } });
+      await Auftraege.save(fr);
+      if (pc) for (var k = 0; k < (r5.items || []).length; k++) await Index.addServerRow(r5.items[k].id, r5.items[k].row);
+      return;
+    }
     if (op.type === 'fileAuftrag') {
       var rec = await Auftraege.get(op.auftragId);
       if (!rec || rec.deleted || rec.status !== 'fertig') return;
@@ -422,13 +579,16 @@
         segments: segs,
         name: window.PdfGen.fileName(rec),
         data: b64,
-        replaceId: rec.drive && rec.drive.fileId || null
+        replaceId: rec.drive && rec.drive.fileId || null,
+        photoIds: (rec.photos || []).filter(function (x) { return x.fileId; }).map(function (x) { return x.fileId; })
       }, { timeout: 180000 });
       var fresh = await Auftraege.get(rec.id);
       fresh.customerId = cust || null;
       fresh.drive = { fileId: r4.fileId, folderId: r4.folderId, path: r4.path, url: r4.url, filedAt: Date.now(), filedVersion: rec.updatedAt };
       if (fresh.updatedAt === rec.updatedAt) fresh.needsRefile = false;
+      (fresh.photos || []).forEach(function (x) { if (x.fileId && (r4.moved || []).indexOf(x.fileId) >= 0) x.path = r4.path; });
       await Auftraege.save(fresh);
+      if ((r4.moved || []).length) Sync.state.needIndex = true;
       for (var i = 0; i < (r4.items || []).length; i++) {
         if (cust) await Index.addServerRow(r4.items[i].id, r4.items[i].row);
       }
@@ -436,7 +596,7 @@
     }
   }
 
-  function waitErr() { var e = new Error('Wartet auf vorherigen Schritt'); e.wait = true; return e; }
+  function waitErr(msg) { var e = new Error(msg || 'Wartet auf vorherigen Schritt'); e.wait = true; return e; }
 
   async function remapAuftraege(tmp, real) {
     var list = await DB.all('auftraege');
@@ -487,8 +647,6 @@
         var iv = await syncAuftraege();
         Sync.state.phase = 'Kundendatenbank';
         await syncIndex(opts.forceIndex, opts.fullIndex, iv);
-        Sync.state.phase = 'Offline-Dateien';
-        await syncOfflineFiles();
         Sync.state.lastOk = Date.now();
         Sync.state.offline = false;
         await Settings.set({ lastSync: Sync.state.lastOk });
@@ -501,6 +659,7 @@
         Sync.state.phase = '';
         Sync.state.pending = (await Outbox.all()).length + (await dirtyCount());
         emit('sync', Sync.state);
+        emit('synced', { ok: !Sync.state.error });
         if (Sync._again) {
           var againOpts = Sync._againOpts || {};
           Sync._again = false; Sync._againOpts = null;
@@ -524,7 +683,10 @@
         await Outbox.remove(op.id);
       } catch (err) {
         if (err.offline || err.auth) throw err;
-        if (err.wait) continue;
+        if (err.wait) {
+          if (op.waitReason !== err.message) { op.waitReason = err.message; await DB.put('outbox', op); emit('outbox'); }
+          continue;
+        }
         op.tries = (op.tries || 0) + 1;
         op.lastError = err.message;
         await DB.put('outbox', op);
@@ -577,26 +739,18 @@
     emit('index');
   }
 
-  /** Dateien der als "offline verfügbar" markierten Kunden nachladen */
-  async function syncOfflineFiles() {
-    var s = await Settings.get();
-    var list = s.offlineCustomers || [];
-    if (!list.length) return;
-    var idx = await Index.load();
-    var cached = await Files.cachedIds();
-    for (var i = 0; i < list.length; i++) {
-      var files = Index.filesBelow(idx, list[i]);
-      for (var k = 0; k < files.length; k++) {
-        var f = files[k];
-        if (f.local) continue;
-        if (cached.has(f.id)) {
-          var rec = await Files.get(f.id);
-          if (!rec || !f.modified || rec.modified >= f.modified) continue;
-        }
-        if (f.size > 30 * 1024 * 1024) continue;
-        await Files.load(f.id, f);
-      }
-    }
+  var pdfjsReady = null;
+  function loadPdfJs() {
+    if (pdfjsReady) return pdfjsReady;
+    pdfjsReady = new Promise(function (resolve, reject) {
+      if (window.pdfjsLib) { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js'; return resolve(window.pdfjsLib); }
+      var sc = document.createElement('script');
+      sc.src = 'pdf.min.js';
+      sc.onload = function () { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js'; resolve(window.pdfjsLib); };
+      sc.onerror = function () { pdfjsReady = null; reject(new Error('PDF-Anzeige konnte nicht geladen werden')); };
+      document.head.appendChild(sc);
+    });
+    return pdfjsReady;
   }
 
   window.addEventListener('online', function () { Sync.state.offline = false; Sync.schedule(200); });
@@ -606,6 +760,8 @@
     DB: DB, Settings: Settings, Index: Index, IdMap: IdMap, Auftraege: Auftraege, Files: Files,
     Outbox: Outbox, Sync: Sync, api: api, backendConfigured: backendConfigured,
     createCustomer: createCustomer, createFolder: createFolder, uploadFile: uploadFile, queueFiling: queueFiling,
+    addAuftragPhoto: addAuftragPhoto, removeAuftragPhoto: removeAuftragPhoto, Profile: Profile, Thumbs: Thumbs,
+    loadPdfJs: loadPdfJs, shrinkImage: shrinkImage,
     on: Sync.on, emit: emit, uid: uid, isoDate: isoDate, base64ToBlob: base64ToBlob, blobToBase64: blobToBase64
   };
 })();

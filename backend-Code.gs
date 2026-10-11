@@ -18,7 +18,9 @@
 
 var ROOT_ID_DEFAULT = '1lymePWA_YSkx8msRpU25hVrBDAhB4Qsd'; // Ordner "Kundendatenbank"
 var DATA_FOLDER_NAME = 'ELUH-App Daten';
-var BACKEND_VERSION = '1.0.0';
+var BACKEND_VERSION = '1.1.0';
+var CACHE_FOLDER_NAME = 'Offline-Kopien';
+var MAX_BATCH_CHARS = 22 * 1024 * 1024;
 var DRIVE_API = 'https://www.googleapis.com/drive/v3/';
 var FILE_FIELDS = 'id,name,parents,mimeType,modifiedTime,size,trashed';
 var FOLDER_MIME = 'application/vnd.google-apps.folder';
@@ -85,7 +87,7 @@ function doPost(e) {
   }
 }
 
-var WRITE_ACTIONS = { upload: 1, createCustomer: 1, createFolder: 1, fileAuftrag: 1 };
+var WRITE_ACTIONS = { upload: 1, createCustomer: 1, createFolder: 1, fileAuftrag: 1, uploadToPath: 1 };
 
 function route_(req) {
   if (WRITE_ACTIONS[req.action]) props_().setProperty('LAST_REFRESH', '0');
@@ -106,6 +108,16 @@ function route_(req) {
       return apiCreateFolder_(req);
     case 'fileAuftrag':
       return apiFileAuftrag_(req);
+    case 'getFiles':
+      return apiGetFiles_(req);
+    case 'putOfflineCopy':
+      return apiPutOfflineCopy_(req);
+    case 'thumbs':
+      return apiThumbs_(req);
+    case 'uploadToPath':
+      return apiUploadToPath_(req);
+    case 'about':
+      return apiAbout_();
     case 'rebuildIndex':
       return withLock_(function () { var i = rebuildIndex_(); return { v: i.v, count: Object.keys(i.items).length }; });
     default:
@@ -225,10 +237,34 @@ function apiFileAuftrag_(req) {
     base = dataFolder_();
     segments = ['Nicht zugeordnet'];
   }
+  var ep = ensurePath_(base, segments);
+  var folder = ep.folder, path = ep.path, created = ep.created;
+  var name = uniqueName_(folder, req.name, req.replaceId);
+  var blob = Utilities.newBlob(Utilities.base64Decode(req.data), 'application/pdf', name);
+  var file = folder.createFile(blob);
+  if (req.replaceId && req.replaceId !== file.getId()) trashQuietly_(req.replaceId);
+  var moved = movePhotos_(req.photoIds || [], folder);
+  return {
+    fileId: file.getId(),
+    folderId: folder.getId(),
+    path: path,
+    url: file.getUrl(),
+    moved: moved,
+    items: created.concat([rowFromDriveApp_(file, folder.getId())])
+  };
+}
+
+
+// ============================================================
+// Offline-Kopien, Vorschaubilder, Fotos (ab Version 1.1)
+// ============================================================
+
+/** Ordnerkette anlegen bzw. vorhandene Ordner wiederverwenden (Namen ohne Leerzeichen am Ende vergleichen) */
+function ensurePath_(base, segments) {
   var created = [];
   var folder = base;
-  var path = [base.getName()];
-  segments.forEach(function (seg) {
+  var path = [base.getName().trim()];
+  (segments || []).forEach(function (seg) {
     var s = String(seg).trim();
     if (!s) return;
     var child = findChildFolder_(folder, s);
@@ -239,17 +275,210 @@ function apiFileAuftrag_(req) {
     folder = child;
     path.push(child.getName().trim());
   });
-  var name = uniqueName_(folder, req.name, req.replaceId);
-  var blob = Utilities.newBlob(Utilities.base64Decode(req.data), 'application/pdf', name);
-  var file = folder.createFile(blob);
-  if (req.replaceId && req.replaceId !== file.getId()) trashQuietly_(req.replaceId);
+  return { folder: folder, path: path, created: created };
+}
+
+/** Datei (z.B. Foto) in Kunde/Berichte/Jahr/Termin ablegen */
+function apiUploadToPath_(req) {
+  var base, segments;
+  if (req.customerId) {
+    base = DriveApp.getFolderById(req.customerId);
+    assertAllowed_(base);
+    segments = req.segments || [];
+  } else {
+    base = dataFolder_();
+    segments = ['Nicht zugeordnet'];
+  }
+  var ep = ensurePath_(base, segments);
+  var name = uniqueName_(ep.folder, req.name, null);
+  var blob = Utilities.newBlob(Utilities.base64Decode(req.data), req.mime || 'application/octet-stream', name);
+  var file = ep.folder.createFile(blob);
   return {
-    fileId: file.getId(),
-    folderId: folder.getId(),
-    path: path,
-    url: file.getUrl(),
-    items: created.concat([rowFromDriveApp_(file, folder.getId())])
+    fileId: file.getId(), folderId: ep.folder.getId(), path: ep.path, name: name,
+    items: ep.created.concat([rowFromDriveApp_(file, ep.folder.getId())])
   };
+}
+
+/** Fotos eines Auftrags in den (endgültigen) Terminordner verschieben; leer gewordene Terminordner entfernen */
+function movePhotos_(ids, folder) {
+  var moved = [];
+  var oldParents = {};
+  ids.forEach(function (id) {
+    try {
+      var f = DriveApp.getFileById(id);
+      assertAllowed_(f);
+      var inside = false;
+      var ps = f.getParents();
+      var parentList = [];
+      while (ps.hasNext()) { var p = ps.next(); parentList.push(p); if (p.getId() === folder.getId()) inside = true; }
+      if (inside) return;
+      f.moveTo(folder);
+      moved.push(id);
+      parentList.forEach(function (p) { oldParents[p.getId()] = p; });
+    } catch (e) { /* Foto evtl. gelöscht */ }
+  });
+  Object.keys(oldParents).forEach(function (pid) {
+    var p = oldParents[pid];
+    if (/^\d{1,2}\.\d{1,2}\.\d{4} - /.test(p.getName().trim()) && !p.getFiles().hasNext() && !p.getFolders().hasNext()) {
+      try { p.setTrashed(true); } catch (e) { /* egal */ }
+    }
+  });
+  return moved;
+}
+
+function authHeaders_() { return { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }; }
+
+/** Vorschaubild-Links mehrerer Dateien parallel holen */
+function thumbLinks_(ids) {
+  if (!ids.length) return {};
+  var reqs = ids.map(function (id) {
+    return { url: DRIVE_API + 'files/' + id + '?fields=thumbnailLink&supportsAllDrives=true', headers: authHeaders_(), muteHttpExceptions: true };
+  });
+  var res = UrlFetchApp.fetchAll(reqs);
+  var out = {};
+  res.forEach(function (r, i) {
+    if (r.getResponseCode() === 200) {
+      var j = JSON.parse(r.getContentText());
+      if (j.thumbnailLink) out[ids[i]] = j.thumbnailLink;
+    }
+  });
+  return out;
+}
+
+/** Verkleinerte Bilder (JPEG) über die Drive-Vorschau laden – spart bei Fotos ca. 90 % */
+function fetchThumbs_(links, px) {
+  var ids = Object.keys(links);
+  if (!ids.length) return {};
+  var reqs = ids.map(function (id) {
+    return { url: String(links[id]).replace(/=s\d+(-[a-z])?$/, '') + '=s' + px, headers: authHeaders_(), muteHttpExceptions: true };
+  });
+  var res = UrlFetchApp.fetchAll(reqs);
+  var out = {};
+  res.forEach(function (r, i) {
+    if (r.getResponseCode() === 200) {
+      var b = r.getBlob();
+      var bytes = b.getBytes();
+      if (bytes.length > 500) out[ids[i]] = { mime: b.getContentType() || 'image/jpeg', data: Utilities.base64Encode(bytes), size: bytes.length };
+    }
+  });
+  return out;
+}
+
+function cacheFolder_() {
+  var p = props_();
+  var id = p.getProperty('CACHE_FOLDER_ID');
+  if (id) {
+    try { var f = DriveApp.getFolderById(id); if (!f.isTrashed()) return f; } catch (e) { /* neu */ }
+  }
+  var data = dataFolder_();
+  var it = data.getFoldersByName(CACHE_FOLDER_NAME);
+  var folder = it.hasNext() ? it.next() : data.createFolder(CACHE_FOLDER_NAME);
+  p.setProperty('CACHE_FOLDER_ID', folder.getId());
+  return folder;
+}
+
+function cacheName_(id, modified, q) { return id + '_' + Number(modified || 0) + '_' + (q || 'standard') + '.pdf'; }
+
+function findCache_(id, modified, q) {
+  var it = cacheFolder_().getFilesByName(cacheName_(id, modified, q));
+  while (it.hasNext()) { var f = it.next(); if (!f.isTrashed()) return f; }
+  return null;
+}
+
+function isAllowedFast_(idx, id) {
+  if (idx && idx.items[id]) return true;
+  try { assertAllowed_(DriveApp.getFileById(id)); return true; } catch (e) { return false; }
+}
+
+/**
+ * Mehrere Dateien auf einmal laden (für "Alles offline").
+ * items: [{id, mime, modified, mode: 'small'|'orig', q: 'standard'|'klein'}]
+ * Bilder kommen bei mode=small verkleinert, PDFs aus dem geteilten Komprimier-Cache
+ * (falls vorhanden), sonst im Original mit needsCompress=true.
+ */
+function apiGetFiles_(req) {
+  var idx = readJson_('index.json');
+  var items = (req.items || []).slice(0, 60);
+  var px = req.q === 'klein' ? 1024 : 1600;
+  var smallImgs = items.filter(function (it) { return it.mode === 'small' && /^image\//.test(it.mime || '') && isAllowedFast_(idx, it.id); });
+  var thumbs = {};
+  try { thumbs = fetchThumbs_(thumbLinks_(smallImgs.map(function (x) { return x.id; })), px); } catch (e) { thumbs = {}; }
+  var out = [], rest = [], total = 0;
+  items.forEach(function (it) {
+    if (total > MAX_BATCH_CHARS) { rest.push(it.id); return; }
+    try {
+      if (!isAllowedFast_(idx, it.id)) throw new Error('Kein Zugriff');
+      var res;
+      if (thumbs[it.id]) {
+        res = { id: it.id, mime: thumbs[it.id].mime, data: thumbs[it.id].data, small: true };
+      } else if (it.mode === 'small' && it.mime === 'application/pdf') {
+        var c = findCache_(it.id, it.modified, it.q);
+        if (c) {
+          res = { id: it.id, mime: 'application/pdf', data: Utilities.base64Encode(c.getBlob().getBytes()), small: true, cached: true };
+        } else {
+          res = originalFile_(it.id);
+          res.needsCompress = true;
+        }
+      } else {
+        res = originalFile_(it.id);
+      }
+      total += res.data.length;
+      out.push(res);
+    } catch (e) {
+      out.push({ id: it.id, error: String(e && e.message || e) });
+    }
+  });
+  return { files: out, rest: rest };
+}
+
+function originalFile_(id) {
+  var f = DriveApp.getFileById(id);
+  var mime = f.getMimeType();
+  var blob = mime.indexOf('application/vnd.google-apps') === 0 ? f.getAs('application/pdf') : f.getBlob();
+  var bytes = blob.getBytes();
+  if (bytes.length > MAX_FILE_BYTES) throw new Error('Datei zu groß (' + Math.round(bytes.length / 1048576) + ' MB)');
+  return { id: id, mime: blob.getContentType(), data: Utilities.base64Encode(bytes), small: false };
+}
+
+/** Auf einem Gerät komprimiertes PDF für alle anderen Geräte im Cache ablegen */
+function apiPutOfflineCopy_(req) {
+  var q = apiAbout_();
+  if (q.limit && q.limit - q.usage < 500 * 1024 * 1024) return { stored: false, reason: 'Drive-Speicher fast voll' };
+  var folder = cacheFolder_();
+  var name = cacheName_(req.id, req.modified, req.q);
+  if (findCache_(req.id, req.modified, req.q)) return { stored: true, existed: true };
+  // ältere Kopien derselben Datei entfernen
+  var old = folder.searchFiles('title contains "' + String(req.id).replace(/"/g, '') + '_"');
+  while (old.hasNext()) { var o = old.next(); if (o.getName().indexOf(req.id + '_') === 0) o.setTrashed(true); }
+  folder.createFile(Utilities.newBlob(Utilities.base64Decode(req.data), 'application/pdf', name));
+  return { stored: true };
+}
+
+/** Kleine Vorschaubilder für alle Bilder/PDFs eines Ordners */
+function apiThumbs_(req) {
+  var folder = DriveApp.getFolderById(req.folderId);
+  assertAllowed_(folder);
+  var r = driveApi_('files', {
+    q: "'" + req.folderId + "' in parents and trashed=false", pageSize: 200,
+    fields: 'files(id,mimeType,modifiedTime,thumbnailLink)', supportsAllDrives: true, includeItemsFromAllDrives: true
+  });
+  var links = {}, mod = {};
+  (r.files || []).forEach(function (f) {
+    if (f.thumbnailLink && (/^image\//.test(f.mimeType) || f.mimeType === 'application/pdf')) {
+      links[f.id] = f.thumbnailLink;
+      mod[f.id] = Date.parse(f.modifiedTime);
+    }
+  });
+  var ids = Object.keys(links).slice(0, 80);
+  var sub = {};
+  ids.forEach(function (id) { sub[id] = links[id]; });
+  var th = fetchThumbs_(sub, req.px || 240);
+  return { thumbs: Object.keys(th).map(function (id) { return { id: id, modified: mod[id], mime: th[id].mime, data: th[id].data }; }) };
+}
+
+function apiAbout_() {
+  var a = driveApi_('about', { fields: 'storageQuota' }).storageQuota || {};
+  return { limit: a.limit ? Number(a.limit) : 0, usage: Number(a.usage || 0), usageInDrive: Number(a.usageInDrive || 0) };
 }
 
 // ============================================================
@@ -559,8 +788,9 @@ function findChildFolder_(parent, name) {
 }
 
 function uniqueName_(folder, name, replaceId) {
-  var base = name.replace(/\.pdf$/i, '');
-  var candidate = base + '.pdf';
+  var m = /^(.*?)(\.[A-Za-z0-9]{1,5})?$/.exec(String(name || 'Datei'));
+  var base = m[1], ext = m[2] || '';
+  var candidate = base + ext;
   var n = 2;
   while (true) {
     var it = folder.getFilesByName(candidate);
@@ -570,7 +800,7 @@ function uniqueName_(folder, name, replaceId) {
       if (f.getId() !== replaceId && !f.isTrashed()) clash = true;
     }
     if (!clash) return candidate;
-    candidate = base + ' (' + n + ').pdf';
+    candidate = base + ' (' + n + ')' + ext;
     n++;
   }
 }

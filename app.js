@@ -48,6 +48,8 @@
     plus: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>',
     print: '<svg viewBox="0 0 24 24"><path d="M7 9V3h10v6M7 17H4v-7h16v7h-3M7 14h10v7H7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
     close: '<svg viewBox="0 0 24 24" width="20" height="20"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>',
+    camera: '<svg viewBox="0 0 24 24"><path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2.2l1.4-2h5.8l1.4 2h2.2A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.4" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
+    pen: '<svg viewBox="0 0 24 24"><path d="M4 20c3-1 4.5-4 7-4s2 3 4 3 3-2 5-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M14.5 4.5l3 3L9 16H6v-3z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
     upload: '<svg viewBox="0 0 24 24"><path d="M12 16V4m0 0l-5 5m5-5l5 5M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>'
   };
   function fileIcon(item) {
@@ -108,27 +110,13 @@
   // ------------------------------------------------------------------
   // PDF-Anzeige & Drucken
   // ------------------------------------------------------------------
-  var pdfjsReady = null;
-  function loadPdfJs() {
-    if (pdfjsReady) return pdfjsReady;
-    pdfjsReady = new Promise(function (resolve, reject) {
-      var s = document.createElement('script');
-      s.src = 'pdf.min.js';
-      s.onload = function () {
-        window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';
-        resolve(window.pdfjsLib);
-      };
-      s.onerror = function () { pdfjsReady = null; reject(new Error('PDF-Anzeige konnte nicht geladen werden')); };
-      document.head.appendChild(s);
-    });
-    return pdfjsReady;
-  }
+  function loadPdfJs() { return S.loadPdfJs(); }
 
   async function renderPdfInto(container, bytes) {
     var lib = await loadPdfJs();
     var pdf = await lib.getDocument({ data: bytes.slice ? bytes.slice(0) : bytes }).promise;
     container.innerHTML = '';
-    var width = Math.min(container.clientWidth - 24, 900);
+    var width = Math.min((container.clientWidth || container.parentNode.clientWidth) - 24, 900);
     var dpr = Math.min(window.devicePixelRatio || 1, 2.5);
     for (var i = 1; i <= pdf.numPages; i++) {
       var page = await pdf.getPage(i);
@@ -191,21 +179,27 @@
     return {
       sheet: sheet,
       body: body,
-      show: async function (blob, name) {
+      show: async function (blob, name, extra) {
         var pb = $('[data-print]', sheet), db = $('[data-dl]', sheet);
+        var note = '';
+        if (extra && extra.small) {
+          note = '<div class="viewer-note">Offline-Kopie (platzsparend verkleinert)' +
+            (navigator.onLine ? ' <button class="btn small" data-orig>Original laden</button>' : ' – Original in Google Drive') + '</div>';
+        }
         pb.hidden = false; db.hidden = isIOS();
         pb.onclick = function () { printBlob(blob, name); };
         db.onclick = function () { downloadBlob(blob, name); };
         var type = blob.type || '';
         if (type === 'application/pdf') {
           var bytes = new Uint8Array(await blob.arrayBuffer());
-          try { await renderPdfInto(body, bytes); }
-          catch (e) { body.innerHTML = '<div class="msg">PDF kann hier nicht angezeigt werden – über „Drucken/Sichern“ öffnen.</div>'; }
+          body.innerHTML = note + '<div class="pdf-pages"><div class="msg"><span class="spinner"></span></div></div>';
+          try { await renderPdfInto($('.pdf-pages', body), bytes); }
+          catch (e) { body.innerHTML = note + '<div class="msg">PDF kann hier nicht angezeigt werden – über „Drucken/Sichern“ öffnen.</div>'; }
         } else if (type.indexOf('image/') === 0) {
           var img = new Image();
           img.src = URL.createObjectURL(blob);
           img.alt = name;
-          body.innerHTML = '';
+          body.innerHTML = note;
           body.appendChild(img);
         } else {
           body.innerHTML = '<div class="msg">Vorschau für diesen Dateityp nicht möglich.<br>Über „' + (isIOS() ? 'Teilen' : 'Sichern') + '“ öffnen.</div>';
@@ -213,6 +207,19 @@
         }
       },
       fail: function (msg) { body.innerHTML = '<div class="msg">' + esc(msg) + '</div>'; }
+    };
+  }
+  function bindOriginal(v, item) {
+    var b = $('[data-orig]', v.body);
+    if (!b) return;
+    b.onclick = async function () {
+      b.disabled = true;
+      b.innerHTML = '<span class="spinner"></span> lädt…';
+      try {
+        var o = await S.Files.loadOriginal(item.id);
+        v.body.innerHTML = '<div class="msg"><span class="spinner"></span></div>';
+        await v.show(o.blob, o.name || item.name);
+      } catch (e) { toast('Original konnte nicht geladen werden: ' + e.message, true); b.disabled = false; b.textContent = 'Original laden'; }
     };
   }
 
@@ -234,7 +241,8 @@
       var rec = await S.Files.load(item.id, item);
       var blob = rec.blob instanceof Blob ? rec.blob : new Blob([rec.blob], { type: rec.mime });
       if (!blob.type && rec.mime) blob = new Blob([blob], { type: rec.mime });
-      await v.show(blob, rec.name || item.name);
+      await v.show(blob, rec.name || item.name, { small: rec.small });
+      bindOriginal(v, item);
     } catch (e) {
       v.fail(e.offline ? 'Diese Datei ist nicht offline gespeichert. Sie wird geladen, sobald wieder Internet da ist (oder Kunde auf „Offline verfügbar“ stellen).' : 'Datei konnte nicht geladen werden: ' + e.message);
     }
@@ -459,6 +467,8 @@
       var c = S.Index.item(idx, custId);
       if (c) applyCustomer(rec, c);
     }
+    var prof = await S.Profile.get();
+    if (prof.monteurSig && prof.autoMonteur !== false) rec.sig = { monteur: { png: prof.monteurSig, at: Date.now(), auto: true } };
     await S.Auftraege.save(rec);
     location.replace('#/auftrag/' + rec.id);
   }, 'auftraege');
@@ -516,6 +526,13 @@
       '<div class="grid2" style="margin-top:14px">' + input('mat_gesamt_summe', 'Gesamt Material') + input('datum_fertigstellung', 'Ort, Datum (Materialschein)') + '</div>' +
       '<datalist id="einheiten">' + EINHEITEN.map(function (e) { return '<option value="' + e + '">'; }).join('') + '</datalist>' +
       '</section>' +
+      '<section class="form-section"><h3>Fotos</h3>' +
+      '<div class="photo-grid" id="photoGrid"></div>' +
+      '<div class="btn-row" style="margin-top:10px">' +
+      '<label class="btn">' + ICONS.camera + '<span>Foto aufnehmen</span><input type="file" accept="image/*" capture="environment" id="phCam" hidden></label>' +
+      '<label class="btn">' + ICONS.upload + '<span>Aus Mediathek</span><input type="file" accept="image/*" multiple id="phLib" hidden></label></div>' +
+      '<p class="small muted" style="margin:8px 2px 0">Fotos landen automatisch im Terminordner beim Kunden (gleicher Ordner wie das Auftrags-PDF).</p></section>' +
+      '<section class="form-section"><h3>Unterschriften</h3><div class="sig-grid"><div class="sig-card" id="sigKunde"></div><div class="sig-card" id="sigMonteur"></div></div></section>' +
       '<section class="form-section"><h3>Ablage in der Kundendatenbank</h3><div class="stack">' +
       '<div class="grid2"><label class="field"><span>Termin-Datum (Ordner)</span><input type="date" data-ablage="datum" value="' + esc(rec.ablage.datum) + '"></label>' +
       '<label class="field"><span>Art (Ordnername)</span><input data-ablage="art" value="' + esc(rec.ablage.art) + '" placeholder="wie „Art des Auftrags“"></label></div>' +
@@ -548,6 +565,8 @@
         markChanged();
         drawCustomer();
         drawPath();
+        drawPhotos();
+        if ((rec.photos || []).some(function (x) { return !x.fileId; })) setTimeout(function () { S.Sync.run(); }, 700);
       });
     }
 
@@ -618,6 +637,8 @@
     // ---- Speichern ----
     function setSaveState(t) { var el = $('#saveState'); if (el) el.textContent = t; }
     var saving = debounce(async function () {
+      var cur = await S.Auftraege.get(rec.id);
+      if (cur) { rec.photos = cur.photos || []; rec.drive = cur.drive; }
       await S.Auftraege.save(rec);
       setSaveState('Gespeichert ' + fmtTime(Date.now()));
       drawStatus();
@@ -694,29 +715,192 @@
       };
     }
 
+    // ---- Fotos ----
+    var photoUrls = [];
+    onCleanup(function () { photoUrls.forEach(function (u) { URL.revokeObjectURL(u); }); });
+    async function drawPhotos() {
+      var grid = $('#photoGrid');
+      if (!grid) return;
+      var ops = await S.Outbox.all();
+      var photos = rec.photos || [];
+      if (!photos.length) { grid.innerHTML = '<div class="small muted">Noch keine Fotos.</div>'; return; }
+      grid.innerHTML = photos.map(function (ph) {
+        var op = ops.filter(function (o) { return o.type === 'uploadPhoto' && o.photoId === ph.id; })[0];
+        var st = ph.fileId ? '<span class="ph-st ok">✓</span>' : (!rec.customerId && rec.status !== 'fertig') ? '<span class="ph-st warn">wartet auf Kunde</span>' : '<span class="ph-st warn">wird hochgeladen</span>';
+        return '<div class="ph" data-ph="' + esc(ph.id) + '"><div class="ph-img"></div>' + st +
+          '<button type="button" class="ph-del" data-phdel="' + esc(ph.id) + '" aria-label="Foto entfernen">' + ICONS.close + '</button></div>';
+      }).join('');
+      for (var i = 0; i < photos.length; i++) {
+        var ph = photos[i];
+        var tile = grid.querySelector('[data-ph="' + CSS.escape(ph.id) + '"] .ph-img');
+        var fr = await S.Files.get(ph.id) || (ph.fileId && await S.Files.get(ph.fileId));
+        var blob = fr && fr.blob;
+        if (!blob && ph.fileId) { var t = await S.Thumbs.get(ph.fileId); blob = t && t.blob; }
+        if (blob && tile) {
+          var u = URL.createObjectURL(blob);
+          photoUrls.push(u);
+          tile.style.backgroundImage = 'url("' + u + '")';
+        }
+      }
+      $$('[data-ph]', grid).forEach(function (el) {
+        el.onclick = function (e) {
+          if (e.target.closest('[data-phdel]')) return;
+          var ph = (rec.photos || []).filter(function (x) { return x.id === el.getAttribute('data-ph'); })[0];
+          if (ph) openDriveFile({ id: ph.fileId || ph.id, name: ph.name, mime: ph.mime, local: !ph.fileId });
+        };
+      });
+      $$('[data-phdel]', grid).forEach(function (b) {
+        b.onclick = async function () {
+          var id = b.getAttribute('data-phdel');
+          var ph = (rec.photos || []).filter(function (x) { return x.id === id; })[0];
+          var ok = await confirmBox('Foto entfernen?', ph && ph.fileId ? 'Das Foto wird aus dem Auftrag entfernt. Im Kundenordner in Google Drive bleibt es erhalten.' : 'Das Foto wurde noch nicht hochgeladen und wird verworfen.', 'Entfernen', true);
+          if (!ok) return;
+          await S.removeAuftragPhoto(rec, id);
+          drawPhotos();
+        };
+      });
+    }
+    async function addPhotos(files, camera) {
+      files = Array.prototype.slice.call(files || []);
+      if (!files.length) return;
+      for (var i = 0; i < files.length; i++) await S.addAuftragPhoto(rec, files[i], { camera: camera });
+      toast(files.length === 1 ? 'Foto gespeichert' : files.length + ' Fotos gespeichert');
+      if (!rec.customerId) toast('Fotos werden hochgeladen, sobald ein Kunde gewählt ist');
+      drawPhotos();
+    }
+    $('#phCam').onchange = function () { addPhotos(this.files, true); this.value = ''; };
+    $('#phLib').onchange = function () { addPhotos(this.files, false); this.value = ''; };
+
+    // ---- Unterschriften ----
+    async function drawSigs() {
+      var prof = await S.Profile.get();
+      [['kunde', '#sigKunde', 'Kunde / Auftraggeber'], ['monteur', '#sigMonteur', 'Monteur / Auftragnehmer']].forEach(function (k) {
+        var box = $(k[1]);
+        if (!box) return;
+        var sg = (rec.sig || {})[k[0]];
+        box.innerHTML = '<div class="sig-title">' + k[2] + '</div>' +
+          (sg ? '<img class="sig-img" alt="Unterschrift" src="' + sg.png + '"><div class="small muted">' + (sg.auto ? 'gespeicherte Unterschrift' : fmtDT(sg.at)) + '</div>' +
+            '<div class="btn-row"><button type="button" class="btn small" data-sign>Neu unterschreiben</button><button type="button" class="btn small ghost danger" data-unsign>Entfernen</button></div>' :
+            '<div class="btn-row"><button type="button" class="btn" data-sign>' + ICONS.pen + '<span>Unterschreiben</span></button>' +
+            (k[0] === 'monteur' && prof.monteurSig ? '<button type="button" class="btn ghost small" data-mine>Meine einsetzen</button>' : '') + '</div>');
+        var b1 = $('[data-sign]', box), b2 = $('[data-unsign]', box), b3 = $('[data-mine]', box);
+        b1.onclick = async function () {
+          var r = await openSignaturePad(k[0] === 'kunde' ? 'Unterschrift Kunde' : 'Unterschrift Monteur', k[0] === 'monteur');
+          if (!r) return;
+          rec.sig = rec.sig || {};
+          rec.sig[k[0]] = { png: r.png, at: Date.now() };
+          if (r.saveAsMine) { await S.Profile.set({ monteurSig: r.png, autoMonteur: true }); toast('Als deine Unterschrift gespeichert'); }
+          markChanged(); drawSigs();
+        };
+        if (b2) b2.onclick = function () { delete rec.sig[k[0]]; markChanged(); drawSigs(); };
+        if (b3) b3.onclick = function () { rec.sig = rec.sig || {}; rec.sig.monteur = { png: prof.monteurSig, at: Date.now(), auto: true }; markChanged(); drawSigs(); };
+      });
+    }
+
     drawCustomer();
     drawRows();
     drawPath();
     drawStatus();
+    drawPhotos();
+    drawSigs();
     rerenderOn(['outbox', 'sync'], drawStatus);
-    // Änderungen von anderen Geräten übernehmen, solange hier nichts getippt wird
-    var lastLocal = rec.updatedAt;
+    rerenderOn(['outbox'], drawPhotos);
+    // Änderungen von anderen Geräten übernehmen (nur wenn gerade nicht getippt/unterschrieben wird)
+    function editable(r) { return JSON.stringify([r.f, r.material, r.sig || {}, r.customerId, r.ablage, r.status]); }
     rerenderOn(['auftraege'], async function () {
       var fresh = await S.Auftraege.get(rec.id);
       if (!fresh) return;
       if (fresh.deleted) { toast('Auftrag wurde auf einem anderen Gerät gelöscht'); location.hash = '#/auftraege'; return; }
-      if (!fresh._dirty && fresh.updatedAt > lastLocal && fresh.updatedAt !== rec.updatedAt && document.activeElement && !document.activeElement.matches('input,textarea')) {
-        lastLocal = fresh.updatedAt;
+      var busy = !modal.hidden || (document.activeElement && document.activeElement.matches('input,textarea'));
+      if (fresh.updatedAt > rec.updatedAt && editable(fresh) !== editable(rec) && !fresh._dirty && !busy) {
         router();
         return;
       }
+      if (fresh.updatedAt > rec.updatedAt) rec.updatedAt = fresh.updatedAt;
       rec.drive = fresh.drive;
+      var photosChanged = JSON.stringify(rec.photos || []) !== JSON.stringify(fresh.photos || []);
+      rec.photos = fresh.photos || [];
+      if (photosChanged) drawPhotos();
       if (rec.customerId && rec.customerId.indexOf('tmp-') === 0 && fresh.customerId && fresh.customerId.indexOf('tmp-') !== 0) rec.customerId = fresh.customerId;
       if (rec.needsRefile && !fresh.needsRefile && fresh.updatedAt >= rec.updatedAt) rec.needsRefile = false;
-      lastLocal = Math.max(lastLocal, fresh.updatedAt);
       drawStatus();
     });
   }, 'auftraege');
+
+  // ------------------------------------------------------------------
+  // Unterschriftsfeld (Finger / Apple Pencil / Maus)
+  // ------------------------------------------------------------------
+  function openSignaturePad(title, withSave) {
+    return new Promise(function (resolve) {
+      var done = false;
+      var sheet = openModal(
+        '<div class="sheet-head"><h3>' + esc(title) + '</h3><button class="btn small ghost" data-close aria-label="Abbrechen">' + ICONS.close + '</button></div>' +
+        '<div class="sheet-body stack"><div class="sig-pad"><canvas></canvas><div class="sig-line"></div><span class="sig-x">✕</span>' +
+        '<span class="sig-hint">Hier unterschreiben</span></div>' +
+        (withSave ? '<label class="check"><input type="checkbox" id="sigSave"> Als meine Unterschrift speichern und in neue Aufträge automatisch einsetzen</label>' : '') +
+        '<div class="btn-row" style="justify-content:space-between"><button type="button" class="btn ghost" data-clear>Löschen</button>' +
+        '<button type="button" class="btn primary" data-ok>Übernehmen</button></div></div>',
+        { sticky: true, onClose: function () { if (!done) resolve(null); } });
+      var pad = $('.sig-pad', sheet), canvas = $('canvas', pad), hint = $('.sig-hint', pad);
+      var dpr = Math.min(window.devicePixelRatio || 1, 3);
+      var ctx, ink = false, drawing = false, last = null, mid = null;
+      function size() {
+        var w = pad.clientWidth, h = Math.round(Math.min(280, Math.max(170, w * 0.4)));
+        canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+        canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+        ctx = canvas.getContext('2d');
+        ctx.scale(dpr, dpr);
+        ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111'; ctx.lineWidth = 2.6;
+        ink = false; hint.hidden = false;
+      }
+      setTimeout(size, 0);
+      function pos(e) { var r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+      canvas.addEventListener('pointerdown', function (e) {
+        e.preventDefault();
+        canvas.setPointerCapture(e.pointerId);
+        drawing = true; last = pos(e); mid = last;
+        ctx.beginPath(); ctx.arc(last.x, last.y, 1.2, 0, Math.PI * 2); ctx.fillStyle = '#111'; ctx.fill();
+        ink = true; hint.hidden = true;
+      });
+      canvas.addEventListener('pointermove', function (e) {
+        if (!drawing) return;
+        e.preventDefault();
+        var evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+        evs.forEach(function (ev) {
+          var p = pos(ev);
+          var m = { x: (last.x + p.x) / 2, y: (last.y + p.y) / 2 };
+          ctx.beginPath(); ctx.moveTo(mid.x, mid.y); ctx.quadraticCurveTo(last.x, last.y, m.x, m.y); ctx.stroke();
+          last = p; mid = m;
+        });
+      });
+      function end() { drawing = false; }
+      canvas.addEventListener('pointerup', end);
+      canvas.addEventListener('pointercancel', end);
+      $('[data-clear]', sheet).onclick = size;
+      $('[data-ok]', sheet).onclick = function () {
+        if (!ink) { toast('Bitte zuerst unterschreiben', true); return; }
+        // auf den beschriebenen Bereich zuschneiden
+        var w = canvas.width, h = canvas.height;
+        var data = ctx.getImageData(0, 0, w, h).data;
+        var x0 = w, y0 = h, x1 = 0, y1 = 0;
+        for (var y = 0; y < h; y += 2) for (var x = 0; x < w; x += 2) {
+          if (data[(y * w + x) * 4 + 3] > 20) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+        }
+        var padPx = Math.round(6 * dpr);
+        x0 = Math.max(0, x0 - padPx); y0 = Math.max(0, y0 - padPx); x1 = Math.min(w, x1 + padPx); y1 = Math.min(h, y1 + padPx);
+        var cw = x1 - x0, ch = y1 - y0;
+        var f = Math.min(1, 900 / cw);
+        var out = document.createElement('canvas');
+        out.width = Math.max(1, Math.round(cw * f)); out.height = Math.max(1, Math.round(ch * f));
+        out.getContext('2d').drawImage(canvas, x0, y0, cw, ch, 0, 0, out.width, out.height);
+        var saveBox = $('#sigSave', sheet);
+        done = true;
+        var res = { png: out.toDataURL('image/png'), saveAsMine: !!(saveBox && saveBox.checked) };
+        closeModal();
+        resolve(res);
+      };
+    });
+  }
 
   // ------------------------------------------------------------------
   // Kundenauswahl (Dialog)
@@ -785,7 +969,7 @@
     view.innerHTML =
       '<div class="page-head"><h1>Kundendatenbank</h1>' +
       '<button class="btn" id="newCustomer">' + ICONS.plus + '<span>Neuer Kunde</span></button>' +
-      '<div class="sub" id="idxInfo"></div></div>' +
+      '<div class="sub" id="idxInfo"></div><div class="sub" id="offInfo"></div></div>' +
       '<div class="stack"><label class="search">' + ICONS.search + '<input class="input" id="cq" type="search" placeholder="Kunde, Straße, Ort…" value="' + esc(custState.q) + '"></label>' +
       '<div class="chips"><button class="chip" data-s="name">A–Z</button><button class="chip" data-s="recent">Zuletzt geändert</button><button class="chip" data-s="offline">Offline verfügbar</button></div>' +
       '<div id="clist"></div></div>';
@@ -822,8 +1006,15 @@
       openCustomerPicker(function (c) { location.hash = '#/ordner/' + encodeURIComponent(c.id); });
       setTimeout(function () { var d = $('#newCust'); if (d) d.open = true; }, 30);
     };
+    function offInfo() {
+      var el = $('#offInfo'), o = window.Offline.state;
+      if (!el) return;
+      el.innerHTML = o.running ? '<a href="#/sync">Offline-Download läuft: ' + o.done + ' / ' + o.total + ' Dateien</a>' : '';
+    }
     await draw();
+    offInfo();
     rerenderOn(['index', 'sync'], draw);
+    onCleanup(S.on('offline', offInfo));
     S.Sync.schedule(200);
   }, 'kunden');
 
@@ -857,6 +1048,7 @@
           .sort(function (a, b) { return auftragDate(b).localeCompare(auftragDate(a)); });
       }
       var custOffline = customer && off.has(customer.id);
+      var allOffline = s.offlineMode === 'alles';
       if (current !== me) return;
       view.innerHTML =
         '<nav class="breadcrumb"><a href="#/kunden">Kundendatenbank</a>' + crumbs.map(function (c) {
@@ -865,9 +1057,10 @@
         '<div class="page-head"><h1>' + esc(folder.name.trim()) + '</h1></div>' +
         '<div class="btn-row" style="margin-bottom:14px">' +
         (customer ? '<a class="btn primary" href="#/auftrag/neu?kunde=' + encodeURIComponent(customer.id) + '">' + ICONS.plus + '<span>Arbeitsauftrag</span></a>' : '') +
-        '<label class="btn">' + ICONS.upload + '<span>Foto / Datei</span><input type="file" id="upl" multiple hidden></label>' +
+        '<label class="btn">' + ICONS.camera + '<span>Foto aufnehmen</span><input type="file" accept="image/*" capture="environment" id="cam" hidden></label>' +
+        '<label class="btn">' + ICONS.upload + '<span>Hochladen</span><input type="file" id="upl" multiple hidden></label>' +
         '<button class="btn" id="mkdir">Neuer Ordner</button>' +
-        (customer ? '<button class="btn' + (custOffline ? ' primary' : '') + '" id="offTog">' + (custOffline ? '✓ Offline verfügbar' : 'Offline verfügbar machen') + '</button>' : '') +
+        (customer && !allOffline ? '<button class="btn' + (custOffline ? ' primary' : '') + '" id="offTog">' + (custOffline ? '✓ Offline verfügbar' : 'Offline verfügbar machen') + '</button>' : '') +
         (folder.local ? '' : '<a class="btn ghost" target="_blank" rel="noopener" href="https://drive.google.com/drive/folders/' + esc(folder.id) + '">In Drive öffnen</a>') +
         '</div>' +
         (auftraege.length ? '<h2>Arbeitsaufträge aus der App</h2><div class="list">' + auftraege.map(function (a) {
@@ -881,7 +1074,8 @@
               '</span><span class="meta" style="display:block">' + (it.local ? 'wird angelegt…' : fmtDate(it.modified)) + '</span></span>' + ICONS.chev + '</a>';
           }
           var isCached = cached.has(it.id);
-          return '<button class="row" data-file="' + esc(it.id) + '">' + fileIcon(it) + '<span class="main"><span class="title" style="display:block">' + esc(it.name) +
+          var canThumb = /^image\//.test(it.mime || '') || it.mime === 'application/pdf';
+          return '<button class="row" data-file="' + esc(it.id) + '"' + (canThumb ? ' data-thumb="' + esc(it.id) + '" data-mod="' + (it.modified || 0) + '"' : '') + '>' + fileIcon(it) + '<span class="main"><span class="title" style="display:block">' + esc(it.name) +
             '</span><span class="meta" style="display:block">' + (isCached ? '<span class="offline-dot" title="offline gespeichert"></span>' : '') +
             (it.local ? 'wird hochgeladen…' : [fmtDate(it.modified), fmtSize(it.size)].filter(Boolean).join(' · ')) + '</span></span></button>';
         }).join('') || '<div class="empty">Ordner ist leer</div>') + '</div>';
@@ -889,12 +1083,16 @@
       $$('[data-file]').forEach(function (b) {
         b.onclick = function () { openDriveFile(S.Index.item(idx, b.getAttribute('data-file'))); };
       });
-      $('#upl').onchange = async function () {
-        var files = Array.prototype.slice.call(this.files || []);
-        for (var i = 0; i < files.length; i++) await S.uploadFile(folderId, files[i]);
-        toast(files.length + (files.length === 1 ? ' Datei' : ' Dateien') + (navigator.onLine ? ' werden hochgeladen' : ' gespeichert – Upload, sobald Internet da ist'));
+      async function up(files, camera) {
+        files = Array.prototype.slice.call(files || []);
+        if (!files.length) return;
+        for (var i = 0; i < files.length; i++) await S.uploadFile(folderId, files[i], { camera: camera });
+        toast((files.length === 1 ? (camera ? 'Foto' : '1 Datei') : files.length + ' Dateien') + (navigator.onLine ? ' wird hochgeladen' : ' gespeichert – Upload, sobald Internet da ist'));
         draw();
-      };
+      }
+      $('#cam').onchange = function () { up(this.files, true); this.value = ''; };
+      $('#upl').onchange = function () { up(this.files, false); this.value = ''; };
+      showThumbs(folderId);
       $('#mkdir').onclick = function () {
         var sheet = openModal('<div class="sheet-head"><h3>Neuer Ordner</h3><button class="btn small ghost" data-close>' + ICONS.close + '</button></div>' +
           '<div class="sheet-body stack"><label class="field"><span>Name</span><input id="fdName" autocomplete="off"></label>' +
@@ -920,9 +1118,37 @@
           toast(navigator.onLine ? 'Dateien werden für offline geladen…' : 'Dateien werden geladen, sobald Internet da ist');
         }
         await S.Settings.set({ offlineCustomers: l });
-        S.Sync.run();
+        window.Offline.run({ manual: true });
         draw();
       };
+    }
+    // Vorschaubilder: aus dem Speicher, sonst einmal pro Ordner vom Server
+    var thumbUrls = [];
+    var fetchedThumbs = false;
+    onCleanup(function () { thumbUrls.forEach(function (u) { URL.revokeObjectURL(u); }); });
+    async function showThumbs(fid) {
+      var els = $$('[data-thumb]');
+      var missing = 0;
+      for (var i = 0; i < els.length; i++) {
+        var el = els[i], id = el.getAttribute('data-thumb'), mod = Number(el.getAttribute('data-mod'));
+        var t = await S.Thumbs.get(id, mod);
+        var blob = t && t.blob;
+        if (!blob) {
+          var fr = await S.Files.get(id);
+          if (fr && /^image\//.test(fr.mime || '')) blob = fr.blob;
+        }
+        if (!blob) { missing++; continue; }
+        var ico = $('.ico', el);
+        if (!ico || ico.classList.contains('thumb')) continue;
+        var u = URL.createObjectURL(blob);
+        thumbUrls.push(u);
+        ico.classList.add('thumb');
+        ico.innerHTML = '<img alt="" src="' + u + '">';
+      }
+      if (missing && !fetchedThumbs && navigator.onLine && current === me && fid.indexOf('tmp-') !== 0) {
+        fetchedThumbs = true;
+        try { var n = await S.Thumbs.fetchFolder(fid); if (n && current === me) showThumbs(fid); } catch (e) { /* ohne Vorschau weiter */ }
+      }
     }
     await draw();
     rerenderOn(['index', 'files', 'auftraege'], draw);
@@ -943,7 +1169,7 @@
       var est = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate() : null;
       var persisted = navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted() : null;
       var offNames = (s.offlineCustomers || []).map(function (id) { var c = S.Index.item(idx, id); return c ? c.name : id; });
-      var opLabel = { createCustomer: 'Kundenordner anlegen', createFolder: 'Ordner anlegen', upload: 'Datei hochladen', fileAuftrag: 'Auftrag ablegen' };
+      var opLabel = { createCustomer: 'Kundenordner anlegen', createFolder: 'Ordner anlegen', upload: 'Datei hochladen', fileAuftrag: 'Auftrag ablegen', uploadPhoto: 'Foto zum Auftrag' };
       var auftragNames = {};
       (await S.Auftraege.all()).forEach(function (a) { auftragNames[a.id] = auftragTitle(a); });
       if (current !== me) return;
@@ -964,17 +1190,16 @@
         '<h2>Warteschlange</h2>' +
         '<div class="list">' + (ops.map(function (o) {
           var label = opLabel[o.type] || o.type;
-          var what = o.type === 'fileAuftrag' ? auftragNames[o.auftragId] || '' : o.name || '';
+          var what = o.type === 'fileAuftrag' || o.type === 'uploadPhoto' ? auftragNames[o.auftragId] || '' : o.name || '';
           return '<div class="row"><span class="main"><span class="title" style="display:block">' + esc(label) + (what ? ': ' + esc(what) : '') + '</span>' +
-            '<span class="meta" style="display:block">' + (o.lastError ? 'Fehler: ' + esc(o.lastError) : 'wartet seit ' + fmtDT(o.createdAt)) + '</span></span>' +
+            '<span class="meta" style="display:block">' + (o.lastError ? 'Fehler: ' + esc(o.lastError) : (o.waitReason ? esc(o.waitReason) + ' · ' : '') + 'seit ' + fmtDT(o.createdAt)) + '</span></span>' +
             (o.lastError ? '<button class="btn small ghost danger" data-drop="' + o.id + '">Verwerfen</button>' : '') + '</div>';
         }).join('') || '<div class="empty">Nichts offen – alles ist synchron.</div>') + '</div>' +
-        '<h2>Offline verfügbare Kunden</h2>' +
-        '<div class="card pad small">' + (offNames.length ? offNames.map(esc).join('<br>') : 'Keine. In einem Kundenordner „Offline verfügbar machen“ tippen, dann bleiben alle Dateien dieses Kunden auf dem Gerät. Einmal geöffnete Dateien werden ohnehin gespeichert.') + '</div>' +
+        '<h2>Offline-Daten</h2><div class="card pad stack" id="offBox"></div>' +
+        '<h2>Fotos &amp; Unterschrift</h2><div class="card pad stack" id="prefBox"></div>' +
         '<h2>Gerät</h2>' +
         '<div class="btn-row">' +
         '<button class="btn" id="fullIndex">Kundendatenbank komplett neu laden</button>' +
-        '<button class="btn" id="clearCache">Offline-Dateien löschen</button>' +
         '<a class="btn" href="#/setup">App-Schlüssel ändern</a></div>' +
         '<h2>App installieren</h2>' +
         '<div class="card pad small stack">' +
@@ -983,17 +1208,8 @@
         '<div>Jedes Gerät einmal mit dem App-Schlüssel verbinden. Danach gleicht sich alles automatisch ab – beim Start, alle paar Minuten und sobald wieder Internet da ist.</div></div>';
       $('#syncNow').onclick = function () { S.Sync.run(); };
       $('#fullIndex').onclick = function () { S.Sync.run({ fullIndex: true }); toast('Kundendatenbank wird neu geladen…'); };
-      $('#clearCache').onclick = async function () {
-        var ok = await confirmBox('Offline-Dateien löschen?', 'Gespeicherte Kopien von Drive-Dateien werden von diesem Gerät entfernt (in Google Drive bleibt alles). Noch nicht hochgeladene Dateien bleiben erhalten.', 'Löschen', true);
-        if (!ok) return;
-        var ops2 = await S.Outbox.all();
-        var keep = {};
-        ops2.forEach(function (o) { if (o.type === 'upload') keep[o.tmpId] = true; });
-        var all = await S.DB.all('files');
-        for (var i = 0; i < all.length; i++) if (!keep[all[i].id]) await S.DB.del('files', all[i].id);
-        toast('Offline-Dateien gelöscht');
-        draw();
-      };
+      drawOffline(offNames);
+      drawPrefs();
       $$('[data-drop]').forEach(function (b) {
         b.onclick = async function () {
           var ok = await confirmBox('Eintrag verwerfen?', 'Dieser Schritt wird nicht mehr zum Server übertragen.', 'Verwerfen', true);
@@ -1001,8 +1217,120 @@
         };
       });
     }
+    // ---- Offline-Daten ----
+    var estCache = null;
+    async function drawOffline(offNames) {
+      var box = $('#offBox');
+      if (!box) return;
+      var cfg = await window.Offline.settings();
+      var fst = await S.Files.stats();
+      if (!estCache || estCache.q !== cfg.quality || Date.now() - estCache.at > 60000) {
+        var e = await window.Offline.estimate('alles', cfg.quality);
+        estCache = { q: cfg.quality, at: Date.now(), e: e };
+      }
+      var e2 = estCache.e;
+      if (current !== me || !$('#offBox')) return;
+      box.innerHTML =
+        '<div class="seg" role="radiogroup" aria-label="Was offline halten">' +
+        '<button type="button" data-mode="aus" class="' + (cfg.mode !== 'alles' ? 'on' : '') + '">Nur ausgewählte Kunden</button>' +
+        '<button type="button" data-mode="alles" class="' + (cfg.mode === 'alles' ? 'on' : '') + '">Komplette Kundendatenbank</button></div>' +
+        '<div class="seg" role="radiogroup" aria-label="Qualität">' +
+        '<button type="button" data-q="standard" class="' + (cfg.quality === 'standard' ? 'on' : '') + '">Standard (gut lesbar)</button>' +
+        '<button type="button" data-q="klein" class="' + (cfg.quality === 'klein' ? 'on' : '') + '">Klein (spart mehr)</button></div>' +
+        '<div class="small">Kundendatenbank im Original: <b>' + fmtSize(e2.original) + '</b> (' + e2.files + ' Dateien) · komprimiert auf dem Gerät ca. <b>' + fmtSize(e2.estimate) + '</b>. ' +
+        'Fotos werden verkleinert, gescannte PDFs neu komprimiert – lesbar, aber deutlich kleiner. Originale bleiben in Google Drive und lassen sich bei Internet jederzeit öffnen.</div>' +
+        '<div id="offProg"></div>' +
+        '<div class="small muted">Auf diesem Gerät gespeichert: <b>' + fst.count + ' Dateien · ' + fmtSize(fst.bytes) + '</b>' + (fst.saved ? ' (gespart: ' + fmtSize(fst.saved) + ')' : '') + '</div>' +
+        (cfg.mode !== 'alles' ? '<div class="small">Ausgewählte Kunden: ' + (offNames.length ? offNames.map(esc).join(' · ') : 'keine – im Kundenordner „Offline verfügbar machen“ tippen') + '</div>' : '') +
+        '<label class="check"><input type="checkbox" id="offShare"' + (cfg.share ? ' checked' : '') + '> Komprimierte PDFs auch für die anderen Geräte in Drive ablegen (die müssen dann nicht neu rechnen)</label>' +
+        '<div class="btn-row" id="offBtns"></div>';
+      $$('[data-mode]', box).forEach(function (b) {
+        b.onclick = async function () {
+          var m = b.getAttribute('data-mode');
+          if (m === 'alles') {
+            var ok = await confirmBox('Komplette Kundendatenbank offline?', 'Es werden ca. ' + fmtSize(estCache.e.estimate) + ' auf diesem Gerät gespeichert. Der erste Download dauert je nach Verbindung 30–90 Minuten – am besten im WLAN, App dabei geöffnet lassen. Danach werden nur noch neue/geänderte Dateien nachgeladen.', 'Starten');
+            if (!ok) return;
+          }
+          await S.Settings.set({ offlineMode: m });
+          if (m === 'alles') window.Offline.run({ manual: true });
+          drawOffline(offNames);
+        };
+      });
+      $$('[data-q]', box).forEach(function (b) {
+        b.onclick = async function () { await S.Settings.set({ offlineQuality: b.getAttribute('data-q') }); drawOffline(offNames); };
+      });
+      $('#offShare', box).onchange = function () { S.Settings.set({ offlineShare: this.checked }); };
+      drawOfflineProgress();
+    }
+    function drawOfflineProgress() {
+      var prog = $('#offProg'), btns = $('#offBtns');
+      if (!prog || !btns) return;
+      var o = window.Offline.state;
+      var pct = o.total ? Math.round(o.done / o.total * 100) : 0;
+      if (o.running || o.paused || (o.total && o.phase)) {
+        var eta = '';
+        if (o.running && o.done > 0 && o.startedAt) {
+          var doneNow = o.done - (o._startDone || 0);
+          var rate = doneNow / ((Date.now() - o.startedAt) / 1000);
+          if (rate > 0) eta = ' · noch ca. ' + Math.max(1, Math.round((o.total - o.done) / rate / 60)) + ' Min.';
+        }
+        prog.innerHTML = '<div class="progress"><span style="width:' + pct + '%"></span></div>' +
+          '<div class="small">' + o.done + ' / ' + o.total + ' Dateien (' + pct + ' %)' + (o.bytes ? ' · ' + fmtSize(o.bytes) + ' neu' : '') + eta +
+          (o.failed ? ' · <span style="color:var(--red)">' + o.failed + ' fehlgeschlagen</span>' : '') +
+          (o.running && o.current ? '<br><span class="muted">' + esc(o.current) + '</span>' : '') +
+          (!o.running && o.phase === 'fertig' ? '<br><b>Fertig.</b>' : '') + (o.phase === 'pausiert' ? '<br>Pausiert.' : '') + '</div>';
+      } else prog.innerHTML = '';
+      btns.innerHTML = (o.running ? '<button type="button" class="btn" id="offPause">Pause</button>' :
+        '<button type="button" class="btn primary" id="offStart">' + (o.paused ? 'Fortsetzen' : 'Jetzt offline laden / aktualisieren') + '</button>') +
+        '<button type="button" class="btn ghost danger" id="offClear">Offline-Daten löschen</button>';
+      var b;
+      if ((b = $('#offPause'))) b.onclick = function () { window.Offline.pause(); };
+      if ((b = $('#offStart'))) b.onclick = function () { if (!navigator.onLine) { toast('Gerade offline', true); return; } window.Offline.resume(); };
+      $('#offClear').onclick = async function () {
+        var ok = await confirmBox('Offline-Daten löschen?', 'Alle Offline-Kopien werden von diesem Gerät entfernt (in Google Drive bleibt alles). Noch nicht hochgeladene Fotos/Dateien bleiben erhalten.', 'Löschen', true);
+        if (!ok) return;
+        window.Offline.pause();
+        await S.Settings.set({ offlineMode: 'aus' });
+        await window.Offline.clearAll();
+        toast('Offline-Daten gelöscht');
+        draw();
+      };
+    }
+    // ---- Fotos & Monteur-Unterschrift ----
+    async function drawPrefs() {
+      var box = $('#prefBox');
+      if (!box) return;
+      var s = await S.Settings.get();
+      var prof = await S.Profile.get();
+      box.innerHTML =
+        '<label class="check"><input type="checkbox" id="phSmall"' + (s.photoOriginal ? '' : ' checked') + '> Fotos vor dem Hochladen verkleinern (empfohlen: ca. 0,5–1 MB statt 3–5 MB, für Doku völlig ausreichend)</label>' +
+        '<div><b class="small">Meine Unterschrift (Monteur)</b></div>' +
+        (prof.monteurSig ? '<img class="sig-img" alt="Gespeicherte Unterschrift" src="' + prof.monteurSig + '">' : '<div class="small muted">Noch keine gespeichert.</div>') +
+        '<label class="check"><input type="checkbox" id="autoSig"' + (prof.autoMonteur !== false ? ' checked' : '') + (prof.monteurSig ? '' : ' disabled') + '> Automatisch in neue Aufträge einsetzen</label>' +
+        '<div class="btn-row"><button type="button" class="btn" id="mySig">' + ICONS.pen + '<span>' + (prof.monteurSig ? 'Neu unterschreiben' : 'Unterschrift hinterlegen') + '</span></button>' +
+        (prof.monteurSig ? '<button type="button" class="btn ghost danger" id="mySigDel">Entfernen</button>' : '') + '</div>';
+      $('#phSmall', box).onchange = function () { S.Settings.set({ photoOriginal: !this.checked }); };
+      $('#autoSig', box).onchange = function () { S.Profile.set({ autoMonteur: this.checked }); };
+      $('#mySig', box).onclick = async function () {
+        var r = await openSignaturePad('Meine Unterschrift (Monteur)', false);
+        if (!r) return;
+        await S.Profile.set({ monteurSig: r.png, autoMonteur: true });
+        toast('Unterschrift gespeichert – gilt auf allen Geräten');
+        drawPrefs();
+      };
+      var d = $('#mySigDel', box);
+      if (d) d.onclick = async function () { await S.Profile.set({ monteurSig: null }); drawPrefs(); };
+    }
     await draw();
     rerenderOn(['sync', 'outbox', 'index'], draw);
+    var wasRunning = window.Offline.state.running;
+    var offOff = S.on('offline', function () {
+      if (current !== me) return;
+      drawOfflineProgress();
+      if (wasRunning && !window.Offline.state.running) { estCache = null; draw(); }
+      wasRunning = window.Offline.state.running;
+    });
+    onCleanup(offOff);
   }, 'sync');
 
   // ------------------------------------------------------------------

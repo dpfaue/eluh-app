@@ -1,7 +1,7 @@
 /* ELUH App – Service Worker: hält die App komplett offline verfügbar */
-var VERSION = 'eluh-v2.0.1';
+var VERSION = 'eluh-v2.1.0';
 var FILES = [
-  './', 'index.html', 'app.css', 'app.js', 'store.js', 'pdfgen.js', 'config.js',
+  './', 'index.html', 'app.css', 'app.js', 'store.js', 'pdfgen.js', 'offline.js', 'config.js',
   'pdf-lib.min.js', 'pdf.min.js', 'pdf.worker.min.js', 'vorlage-arbeitsauftrag.pdf',
   'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png', 'logo.png'
 ];

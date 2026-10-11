@@ -153,6 +153,35 @@
     });
   }
 
+  // Unterschriftsflächen (PDF-Punkte, Ursprung unten links) – je zwei Varianten:
+  // flach über der ganzen Linie oder höher rechts neben der Beschriftung. Gewählt wird die,
+  // in der die Unterschrift am größten dargestellt werden kann.
+  var SIG_BOXES = {
+    kunde: [{ x: 42, y: 105.5, w: 215, h: 27.5 }, { x: 146, y: 105.5, w: 112, h: 44 }],
+    monteur: [{ x: 302, y: 105.5, w: 215, h: 27.5 }, { x: 410, y: 105.5, w: 108, h: 44 }],
+    monteur2: [{ x: 392, y: 218.5, w: 161, h: 17.5 }, { x: 468, y: 218.5, w: 85, h: 34 }]
+  };
+
+  function dataUrlBytes(url) {
+    var b64 = String(url).split(',')[1] || '';
+    var bin = atob(b64);
+    var arr = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return arr;
+  }
+
+  async function drawSignature(doc, page, png, boxes) {
+    if (!png) return;
+    var img = await doc.embedPng(dataUrlBytes(png));
+    var ar = img.width / img.height;
+    var best = null;
+    boxes.forEach(function (b) {
+      var w = Math.min(b.w, b.h * ar), h = w / ar;
+      if (!best || w * h > best.w * best.h) best = { x: b.x, y: b.y, w: w, h: h, box: b };
+    });
+    page.drawImage(img, { x: best.box.x + (best.box.w - best.w) / 2, y: best.y, width: best.w, height: best.h });
+  }
+
   /** Erzeugt die PDF-Seiten eines Auftrags in einem neuen Dokument */
   async function buildDoc(rec) {
     var ctx = await loadFlat();
@@ -177,6 +206,13 @@
       fillMaterialPage(extra, rec, chunks[c], c === chunks.length - 1);
       var copied = await ctx.doc.copyPages(extra.doc, [1]);
       ctx.doc.addPage(copied[0]);
+    }
+    var sig = rec.sig || {};
+    await drawSignature(ctx.doc, ctx.doc.getPage(0), sig.kunde && sig.kunde.png, SIG_BOXES.kunde);
+    await drawSignature(ctx.doc, ctx.doc.getPage(0), sig.monteur && sig.monteur.png, SIG_BOXES.monteur);
+    var pages = ctx.doc.getPages();
+    for (var pi = 1; pi < pages.length; pi++) {
+      await drawSignature(ctx.doc, pages[pi], sig.monteur && sig.monteur.png, SIG_BOXES.monteur2);
     }
     var title = 'Arbeitsauftrag' + (f.auftrags_nr ? ' ' + f.auftrags_nr : '') + (f.kunde_name ? ' – ' + f.kunde_name : '');
     ctx.doc.setTitle(sanitize(ctx.font, title));
