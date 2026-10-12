@@ -26,7 +26,7 @@
   U.route(/^#\/buero$/, async function () {
     var s = await S.Settings.get();
     U.view.innerHTML =
-      '<div class="page-head"><h1>Aufträge</h1><div class="sub">Vom Chef freigegeben – zum Drucken und Abrechnen</div></div>' +
+      '<div class="page-head"><h1>Aufträge</h1><div class="sub">Von Dominic freigegeben – zum Drucken und Abrechnen</div></div>' +
       (s.bueroHintSeen ? '' : '<div class="hint-card" id="hint"><b>So geht’s:</b> Auftrag antippen → „Drucken“. Wenn er abgerechnet ist, „Abgerechnet“ antippen. Mehrere auf einmal: Häkchen setzen und unten „Drucken“. <button class="btn small ghost" id="hintOk" style="color:inherit">Verstanden</button></div>') +
       '<div class="stack" style="margin-top:12px">' +
       '<div class="chips" id="otabs"></div>' +
@@ -124,7 +124,7 @@
         '<dt>Auftrags-Nr.</dt><dd>' + esc(f.auftrags_nr || '–') + '</dd>' +
         '<dt>Datum</dt><dd>' + esc(U.isoToDe(U.auftragDate(r))) + '</dd>' +
         '<dt>Arbeitszeit</dt><dd>' + (window.PdfGen.hasZeiten(r) ? esc(window.PdfGen.sumZeiten(r)) + ' Std. (Stundennachweis wird mitgedruckt)' : '–') + '</dd>' +
-        '<dt>Material</dt><dd>' + ((r.material || []).filter(function (m) { return m && (m.bez || m.artnr); }).length || 0) + ' Positionen</dd>' +
+        '<dt>Material</dt><dd>' + (window.PdfGen.hasMaterial(r) ? ((r.material || []).filter(function (m) { return m && (m.bez || m.artnr); }).length) + ' Positionen (Materialschein wird mitgedruckt)' : 'kein Material') + '</dd>' +
         '<dt>Freigegeben</dt><dd>' + U.fmtDT(o.sharedAt) + '</dd>' +
         '<dt>Gedruckt</dt><dd>' + (o.printedAt ? U.fmtDT(o.printedAt) + (o.printedBy ? ' (' + esc(o.printedBy) + ')' : '') : 'noch nicht') + '</dd>' +
         '<dt>Abgerechnet</dt><dd>' + (o.billedAt ? U.fmtDT(o.billedAt) + (o.billedBy ? ' (' + esc(o.billedBy) + ')' : '') : 'noch nicht') + '</dd>' +

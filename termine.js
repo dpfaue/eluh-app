@@ -1,4 +1,4 @@
-/* ELUH App – Termine (für Chef und Büro) mit Erinnerungen und Kalender-Abo */
+/* ELUH App – Termine (für Dominic und Büro) mit Erinnerungen und Kalender-Abo */
 (function () {
   'use strict';
   var S = window.Store, U = window.UI;

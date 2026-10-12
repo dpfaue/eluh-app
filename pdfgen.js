@@ -196,10 +196,15 @@
     fill(ctx, 'ort_datum', f.ort_datum);
 
     var rows = materialRows(rec);
+    var hasMaterial = rows.length > 0 || String(f.mat_gesamt_summe || '').trim();
+    if (!hasMaterial) {
+      // kein Material eingetragen → Materialschein-Seite weglassen
+      ctx.doc.removePage(1);
+    }
     var chunks = [];
     for (var i = 0; i < rows.length; i += ROWS_PER_PAGE) chunks.push(rows.slice(i, i + ROWS_PER_PAGE));
     if (!chunks.length) chunks.push([]);
-    fillMaterialPage(ctx, rec, chunks[0], chunks.length === 1);
+    if (hasMaterial) fillMaterialPage(ctx, rec, chunks[0], chunks.length === 1);
     // weitere Materialschein-Seiten bei mehr als 18 Positionen
     for (var c = 1; c < chunks.length; c++) {
       var extra = await loadFlat();
@@ -211,7 +216,7 @@
     await drawSignature(ctx.doc, ctx.doc.getPage(0), sig.kunde && sig.kunde.png, SIG_BOXES.kunde);
     await drawSignature(ctx.doc, ctx.doc.getPage(0), sig.monteur && sig.monteur.png, SIG_BOXES.monteur);
     var pages = ctx.doc.getPages();
-    for (var pi = 1; pi < pages.length; pi++) {
+    for (var pi = 1; hasMaterial && pi < pages.length; pi++) {
       await drawSignature(ctx.doc, pages[pi], sig.monteur && sig.monteur.png, SIG_BOXES.monteur2);
     }
     var title = 'Arbeitsauftrag' + (f.auftrags_nr ? ' ' + f.auftrags_nr : '') + (f.kunde_name ? ' – ' + f.kunde_name : '');
@@ -234,6 +239,7 @@
     return (rec.zeiten || []).filter(function (z) { return z && String(z.stunden || '').trim(); });
   }
   function hasZeiten(rec) { return zeitRows(rec).length > 0; }
+  function hasMaterial(rec) { return materialRows(rec).length > 0 || !!String((rec.f || {}).mat_gesamt_summe || '').trim(); }
   function num(v) { var n = parseFloat(String(v || '').replace(',', '.').replace(/[^0-9.\-]/g, '')); return isNaN(n) ? 0 : n; }
   function fmtNum(n) { return (Math.round(n * 100) / 100).toFixed(2).replace(/\.?0+$/, '').replace('.', ','); }
 
@@ -375,7 +381,7 @@
   }
 
   window.PdfGen = {
-    build: build, buildFull: buildFull, buildStunden: buildStunden, hasZeiten: hasZeiten, stundenName: stundenName,
+    build: build, buildFull: buildFull, buildStunden: buildStunden, hasZeiten: hasZeiten, hasMaterial: hasMaterial, stundenName: stundenName,
     merge: merge, folderSegments: folderSegments, fileName: fileName, fmtDate: fmtDate, sumZeiten: function (rec) { return fmtNum(zeitRows(rec).reduce(function (a, z) { return a + num(z.stunden); }, 0)); }
   };
 })();

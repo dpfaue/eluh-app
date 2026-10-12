@@ -769,7 +769,7 @@
   }
 
   // ------------------------------------------------------------------
-  // Termine (Chef + Büro, synchronisiert über termine.json)
+  // Termine (Dominic + Büro, synchronisiert über termine.json)
   // ------------------------------------------------------------------
   var Termine = {
     all: async function () { return (await DB.all('termine')).filter(function (t) { return !t.deleted; }); },
@@ -785,7 +785,7 @@
     remove: async function (t) { t.deleted = true; return Termine.save(t); },
     create: async function (preset) {
       var s = await Settings.get();
-      return Object.assign({ id: uid('t-'), title: '', date: isoDate(new Date()), time: '', end: '', allDay: false, person: '', note: '', remind: [60], createdBy: s.deviceName || (s.role === 'buero' ? 'Büro' : 'Chef'), createdAt: Date.now() }, preset || {});
+      return Object.assign({ id: uid('t-'), title: '', date: isoDate(new Date()), time: '', end: '', allDay: false, person: '', note: '', remind: [60], createdBy: s.deviceName || (s.role === 'buero' ? 'Büro' : 'Dominic'), createdAt: Date.now() }, preset || {});
     }
   };
 

@@ -294,7 +294,7 @@
     var s = await S.Settings.get();
     var st = await S.Push.status();
     var isBuero = s.role === 'buero';
-    var why = isBuero ? 'neue Aufträge vom Chef, neue Termine und Erinnerungen' : 'neue Termine vom Büro und Termin-Erinnerungen';
+    var why = isBuero ? 'neue Aufträge von Dominic, neue Termine und Erinnerungen' : 'neue Termine vom Büro und Termin-Erinnerungen';
     var html = '<div class="small">Mitteilungen aufs Gerät bei: ' + why + '.</div>' +
       '<label class="field"><span>Name dieses Geräts / Person</span><input id="devName" value="' + esc(s.deviceName || '') + '" placeholder="z. B. Dominic"></label>';
     if (st === 'unsupported') {
@@ -401,7 +401,7 @@
         var pj = await S.api('ping', {}, { key: key, timeout: 30000 });
         var before = await S.Settings.get();
         if (before.role && before.role !== pj.role) {
-          // Gerät wechselt zwischen Chef- und Büro-Zugang → lokale Auftragsdaten entfernen
+          // Gerät wechselt zwischen Dominic- und Büro-Zugang → lokale Auftragsdaten entfernen
           await S.DB.clear('auftraege'); await S.DB.clear('outbox'); await S.DB.put('kv', 0, 'seq'); await S.DB.put('kv', [], 'officeList');
         }
         await S.Settings.set({ key: key, skipSetup: false, role: pj.role, vapidKey: pj.vapidKey, icsToken: pj.ics, deviceName: name });
@@ -433,7 +433,7 @@
     if (!rec.customerId) return { cls: 'info', text: 'Ohne Kunde', key: 'fertig' };
     return { cls: 'ok', text: 'Abgelegt', key: 'fertig' };
   }
-  /** Freigabe stellt der Chef ein, Druck-/Abrechnungsstatus kommt vom Büro (Server) */
+  /** Freigabe stellt Dominic ein, Druck-/Abrechnungsstatus kommt vom Büro (Server) */
   function mergeOffice(local, server) {
     var so = (server && server.office) || {}, lo = local.office;
     if (!lo) return server && server.office;
@@ -610,6 +610,7 @@
       '<div class="mat-row mat-head"><span>Artikel-Nr.</span><span>Bezeichnung</span><span>Stck./m/kg</span><span>Menge</span><span>Einzelpreis €</span><span>Gesamtpreis €</span><span></span></div>' +
       '<div id="matRows"></div>' +
       '<div class="btn-row" style="margin-top:8px"><button type="button" class="btn small" id="addRow">' + ICONS.plus + '<span>Position</span></button></div>' +
+      '<p class="small muted" style="margin:8px 2px 0">Der Materialschein kommt nur ins PDF, wenn Material eingetragen ist.</p>' +
       '<div class="grid2" style="margin-top:14px">' + input('mat_gesamt_summe', 'Gesamt Material') + input('datum_fertigstellung', 'Ort, Datum (Materialschein)') + '</div>' +
       '<datalist id="einheiten">' + EINHEITEN.map(function (e) { return '<option value="' + e + '">'; }).join('') + '</datalist>' +
       '</section>' +
