@@ -26,7 +26,7 @@
       (isBuero ? '<a class="btn" href="#/buero">' + U.ICONS.print + '<span>Aufträge</span></a>' :
         '<a class="btn primary" href="#/auftrag/neu">' + U.ICONS.plus + '<span>Neuer Auftrag</span></a>') +
       '<a class="btn" href="#/termine/neu">' + U.ICONS.plus + '<span>Neuer Termin</span></a></div>' +
-      '<div id="hT"></div><div id="hA"></div>';
+      (isBuero ? '' : '<div id="hS"></div>') + '<div id="hT"></div><div id="hA"></div>';
     var me = U.current();
 
     async function draw() {
@@ -35,6 +35,7 @@
       var all = (await S.Termine.all()).sort(function (a, b) { return startMs(a) - startMs(b); });
       var heute = all.filter(function (t) { return t.date === todayIso; });
       var morgen = all.filter(function (t) { return t.date === tomorrowIso; });
+      if (U.current() !== me || !$('#hT')) return; // Seite inzwischen gewechselt
       $('#hT').innerHTML =
         '<h2>Termine heute' + (heute.length ? ' <span class="badge red">' + heute.length + '</span>' : '') + '</h2>' +
         '<div class="list">' + (heute.map(function (t) { return terminRow(t, true); }).join('') || '<div class="empty">Heute keine Termine.</div>') + '</div>' +
@@ -86,6 +87,7 @@
         (offen.length ? '<div class="card pad small" style="margin-top:14px">' + offen.length + ' gedruckt, noch nicht abgerechnet · <a href="#/buero">ansehen</a></div>' : '');
     }
 
+    if (!isBuero && window.Stunden) window.Stunden.heuteCard($('#hS'));
     await draw();
     U.rerenderOn(['termine', 'auftraege', 'outbox', 'office'], draw);
     // um Mitternacht / beim Zurückkommen aktualisieren

@@ -95,7 +95,7 @@ button { cursor: pointer; }
 /* ---------- Untere Navigation (Handy) ---------- */
 .bottombar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
-  display: grid; grid-template-columns: repeat(5, 1fr);
+  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
   padding: 6px 8px calc(6px + var(--safe-b));
   background: color-mix(in srgb, var(--surface) 94%, transparent);
   backdrop-filter: saturate(1.4) blur(12px);
@@ -335,3 +335,36 @@ body.role-buero .chef-only { display: none !important; }
 .tb-box { border: 1px dashed var(--line, #ddd); border-radius: 12px; padding: 10px 12px; }
 .tb-box .tb-label { font-size: 12.5px; font-weight: 700; color: var(--ink-3); margin: 2px 0 6px; text-transform: uppercase; letter-spacing: .03em; }
 .tb-box .chips { margin-bottom: 6px; }
+
+/* ---------- Stundenzettel ---------- */
+.sz-current { margin-bottom: 14px; }
+.sz-cur-name { font-size: 20px; font-weight: 750; margin: 2px 0 6px; }
+.sz-row .main { flex: 1; min-width: 0; text-decoration: none; color: inherit; }
+.sz-row .chev { color: var(--ink-3); display: flex; }
+.sz-month { margin: 8px 0; }
+.sz-month summary { cursor: pointer; font-weight: 650; padding: 8px 2px; }
+.sz-actions { margin: 0 0 14px; flex-wrap: wrap; }
+.sz-heute { display: flex; align-items: center; justify-content: space-between; gap: 10px; text-decoration: none; color: inherit; margin-bottom: 14px; }
+.sz-sheet { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+.sz-head { display: grid; grid-template-columns: 1fr 1.4fr 1fr; gap: 10px; font-size: 13px; margin-bottom: 10px; }
+.sz-title { text-align: center; }
+.sz-meta { text-align: right; }
+.sz-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.sz-table { width: 100%; min-width: 640px; border-collapse: collapse; font-size: 13.5px; }
+.sz-table th, .sz-table td { border: 1px solid var(--line); padding: 5px 7px; text-align: left; vertical-align: top; }
+.sz-table th { background: var(--surface-2); font-size: 12px; }
+.sz-table td:nth-child(n+4) { white-space: nowrap; text-align: right; }
+.sz-table .sz-obj { min-width: 220px; }
+.sz-table .sz-daysum td { background: var(--surface-2); color: var(--ink-2); font-size: 12px; font-weight: 650; }
+.sz-table tfoot td { font-weight: 800; background: var(--surface-2); }
+.sz-list { display: none; }
+.sz-l-row { display: grid; grid-template-columns: 44px 1fr auto; gap: 8px; padding: 8px 2px; border-bottom: 1px solid var(--line); align-items: start; }
+.sz-l-row .d { font-weight: 700; font-size: 13px; color: var(--ink-2); }
+.sz-l-row .m { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.sz-l-row .h { font-weight: 800; }
+.sz-l-sum, .sz-l-total { display: flex; justify-content: space-between; padding: 6px 4px; font-size: 13px; color: var(--ink-2); background: var(--surface-2); border-radius: 6px; margin: 4px 0 8px; }
+.sz-l-total { font-size: 15px; color: var(--ink); margin-top: 10px; }
+@media (max-width: 560px) {
+  .sz-head { grid-template-columns: 1fr 1fr; } .sz-title { grid-column: 1 / -1; order: -1; text-align: left; }
+  .sz-scroll { display: none; } .sz-list { display: block; }
+}

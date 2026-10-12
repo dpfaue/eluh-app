@@ -350,7 +350,7 @@
   var routes = [];
   function route(re, fn, tab) { routes.push({ re: re, fn: fn, tab: tab }); }
 
-  var CHEF_ONLY = /^#\/(auftraege|auftrag\/|sync)/;
+  var CHEF_ONLY = /^#\/(auftraege|auftrag\/|sync|stunden)/;
   async function router() {
     var s = await S.Settings.get();
     var isBuero = s.role === 'buero';
@@ -1664,6 +1664,7 @@
     confirmBox: confirmBox, choiceBox: choiceBox, ICONS: ICONS, fmtDate: fmtDate, fmtDT: fmtDT, fmtTime: fmtTime, isoToDe: isoToDe,
     debounce: debounce, matchQuery: matchQuery, auftragTitle: auftragTitle, auftragDate: auftragDate, officeStatus: officeStatus,
     auftragStatus: auftragStatus, showAuftragPdf: showAuftragPdf, openCustomerPicker: openCustomerPicker, parseCustomer: parseCustomer, rerenderOn: rerenderOn,
-    onCleanup: onCleanup, current: function () { return current; }, renderPushBox: renderPushBox, isIOS: isIOS, fileIcon: fileIcon
+    onCleanup: onCleanup, current: function () { return current; }, renderPushBox: renderPushBox, isIOS: isIOS, fileIcon: fileIcon,
+    openViewer: openViewer, printBlob: printBlob, downloadBlob: downloadBlob, inputBox: inputBox
   };
 })();
