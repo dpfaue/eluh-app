@@ -227,12 +227,122 @@
     return doc.save();
   }
 
-  /** Mehrere Aufträge zu einem PDF zusammenfassen (Sammeldruck) */
+  // ------------------------------------------------------------------
+  // Stundennachweis (eigenes PDF, nur wenn Arbeitszeiten eingetragen sind)
+  // ------------------------------------------------------------------
+  function zeitRows(rec) {
+    return (rec.zeiten || []).filter(function (z) { return z && String(z.stunden || '').trim(); });
+  }
+  function hasZeiten(rec) { return zeitRows(rec).length > 0; }
+  function num(v) { var n = parseFloat(String(v || '').replace(',', '.').replace(/[^0-9.\-]/g, '')); return isNaN(n) ? 0 : n; }
+  function fmtNum(n) { return (Math.round(n * 100) / 100).toFixed(2).replace(/\.?0+$/, '').replace('.', ','); }
+
+  var logoBytes = null;
+  async function logo() {
+    if (!logoBytes) { var r = await fetch('logo.png'); logoBytes = new Uint8Array(await r.arrayBuffer()); }
+    return logoBytes;
+  }
+
+  async function buildStundenDoc(rec) {
+    var L = window.PDFLib;
+    var doc = await L.PDFDocument.create();
+    var page = doc.addPage([595.2756, 841.8898]);
+    var font = await doc.embedFont(L.StandardFonts.Helvetica);
+    var bold = await doc.embedFont(L.StandardFonts.HelveticaBold);
+    var grey = L.rgb(0.25, 0.25, 0.25), line = L.rgb(0.6, 0.6, 0.6), ink = L.rgb(0.08, 0.08, 0.08);
+    var M = 40, W = 595.2756;
+    var img = await doc.embedPng(await logo());
+    var lw = W - 2 * M, lh = lw * 129 / 654;
+    var ly = 841.8898 - 28 - lh;
+    page.drawImage(img, { x: M, y: ly, width: lw, height: lh });
+    var ry = ly - 12;
+    page.drawLine({ start: { x: M, y: ry }, end: { x: W - M, y: ry }, thickness: 1, color: L.rgb(0.5, 0.5, 0.5) });
+    var f = rec.f || {};
+    var T = function (t) { return sanitize(font, t); };
+    var y = ry - 30;
+    page.drawText('Stundennachweis', { x: M, y: y, size: 13, font: bold, color: grey });
+    y -= 30;
+    var info = [
+      ['Auftrags-Nr.', f.auftrags_nr || '–'],
+      ['Kunde', [f.kunde_name, f.kunde_name_zusatz].filter(Boolean).join(', ') || rec.customerName || '–'],
+      ['Adresse', f.kunde_adresse || '–'],
+      ['Art des Auftrags', f.art || '–'],
+      ['Datum der Annahme', fmtDate(f.datum_annahme) || '–']
+    ];
+    info.forEach(function (row) {
+      page.drawText(row[0], { x: M, y: y, size: 8, font: font, color: grey });
+      page.drawText(T(row[1]), { x: M + 110, y: y, size: 10, font: font, color: ink, maxWidth: W - 2 * M - 110 });
+      y -= 18;
+    });
+    y -= 14;
+    // Tabelle
+    var cols = [{ t: 'Datum', x: M, w: 110 }, { t: 'Monteur', x: M + 115, w: 260 }, { t: 'Stunden', x: M + 380, w: W - M - (M + 380) }];
+    cols.forEach(function (c) { page.drawText(c.t, { x: c.x + 3, y: y, size: 9, font: bold, color: ink }); });
+    page.drawLine({ start: { x: M, y: y - 5 }, end: { x: W - M, y: y - 5 }, thickness: 0.8, color: L.rgb(0.5, 0.5, 0.5) });
+    y -= 10;
+    var rows = zeitRows(rec);
+    var sum = 0;
+    var rowH = 20;
+    rows.forEach(function (z) {
+      y -= rowH;
+      var h = num(z.stunden);
+      sum += h;
+      cols.forEach(function (c) { page.drawRectangle({ x: c.x, y: y, width: c.w, height: rowH - 4, borderColor: line, borderWidth: 0.6 }); });
+      page.drawText(T(fmtDate(z.datum) || ''), { x: cols[0].x + 4, y: y + 5, size: 10, font: font, color: ink });
+      page.drawText(T(z.monteur || ''), { x: cols[1].x + 4, y: y + 5, size: 10, font: font, color: ink, maxWidth: cols[1].w - 8 });
+      var hs = T(String(z.stunden).trim());
+      page.drawText(hs, { x: cols[2].x + cols[2].w - 6 - font.widthOfTextAtSize(hs, 10), y: y + 5, size: 10, font: font, color: ink });
+    });
+    y -= 26;
+    var st = 'Gesamt: ' + fmtNum(sum) + ' Std.';
+    page.drawText(st, { x: W - M - 6 - bold.widthOfTextAtSize(st, 11), y: y, size: 11, font: bold, color: ink });
+    // Unterschrift Monteur
+    y -= 60;
+    page.drawText('Ort, Datum', { x: M, y: y + 22, size: 8, font: font, color: grey });
+    page.drawText(T(f.datum_fertigstellung || f.ort_datum || ''), { x: M, y: y + 4, size: 10, font: font, color: ink });
+    page.drawLine({ start: { x: M, y: y }, end: { x: M + 220, y: y }, thickness: 0.8, color: L.rgb(0.4, 0.4, 0.4) });
+    page.drawText('Unterschrift Monteur', { x: M + 300, y: y + 40, size: 8, font: font, color: grey });
+    page.drawLine({ start: { x: M + 300, y: y }, end: { x: W - M, y: y }, thickness: 0.8, color: L.rgb(0.4, 0.4, 0.4) });
+    var sig = rec.sig && rec.sig.monteur && rec.sig.monteur.png;
+    if (sig) await drawSignature(doc, page, sig, [{ x: M + 302, y: y + 1, w: W - M - (M + 302) - 2, h: 36 }]);
+    // Fußzeile wie im Formular
+    page.drawLine({ start: { x: M, y: 70 }, end: { x: W - M, y: 70 }, thickness: 0.8, color: L.rgb(0.7, 0.7, 0.7) });
+    ['Tel.: 033971/ 8739-0     Fax.: 033971/ 8739-17     email: info@eluhkyritz.de     www.eluhkyritz.de',
+      'Sparkasse Ostprignitz Ruppin     BIC WELADED1OPR     IBAN DE41 1605 0202 1520 00226 17',
+      'Amtsgericht Neuruppin     HRB-NR 729     St-Nr. 052/108/00974     Geschäftsführer: Toral Horn'].forEach(function (t, i) {
+      var tt = T(t);
+      page.drawText(tt, { x: (W - font.widthOfTextAtSize(tt, 7)) / 2, y: 60 - i * 9, size: 7, font: font, color: L.rgb(0.35, 0.35, 0.35) });
+    });
+    doc.setTitle(T('Stundennachweis' + (f.auftrags_nr ? ' ' + f.auftrags_nr : '') + (f.kunde_name ? ' – ' + f.kunde_name : '')));
+    doc.setCreator('ELUH App');
+    return doc;
+  }
+
+  async function buildStunden(rec) {
+    if (!hasZeiten(rec)) return null;
+    return (await buildStundenDoc(rec)).save();
+  }
+
+  /** Auftrag + (falls vorhanden) Stundennachweis in einem Dokument – fürs Drucken */
+  async function buildFullDoc(rec) {
+    var d = await buildDoc(rec);
+    if (hasZeiten(rec)) {
+      var sd = await buildStundenDoc(rec);
+      var pages = await d.copyPages(sd, sd.getPageIndices());
+      pages.forEach(function (p) { d.addPage(p); });
+    }
+    return d;
+  }
+  async function buildFull(rec) { return (await buildFullDoc(rec)).save(); }
+
+  function stundenName(rec) { return fileName(rec).replace(/^Arbeitsauftrag/, 'Stundennachweis'); }
+
+  /** Mehrere Aufträge zu einem PDF zusammenfassen (Sammeldruck, inkl. Stundennachweise) */
   async function merge(recs) {
     var L = window.PDFLib;
     var out = await L.PDFDocument.create();
     for (var i = 0; i < recs.length; i++) {
-      var d = await buildDoc(recs[i]);
+      var d = await buildFullDoc(recs[i]);
       var pages = await out.copyPages(d, d.getPageIndices());
       pages.forEach(function (p) { out.addPage(p); });
     }
@@ -264,5 +374,8 @@
     return 'Arbeitsauftrag' + (tail ? ' ' + tail : '') + '.pdf';
   }
 
-  window.PdfGen = { build: build, merge: merge, folderSegments: folderSegments, fileName: fileName, fmtDate: fmtDate };
+  window.PdfGen = {
+    build: build, buildFull: buildFull, buildStunden: buildStunden, hasZeiten: hasZeiten, stundenName: stundenName,
+    merge: merge, folderSegments: folderSegments, fileName: fileName, fmtDate: fmtDate, sumZeiten: function (rec) { return fmtNum(zeitRows(rec).reduce(function (a, z) { return a + num(z.stunden); }, 0)); }
+  };
 })();

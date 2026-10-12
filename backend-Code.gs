@@ -18,7 +18,8 @@
 
 var ROOT_ID_DEFAULT = '1lymePWA_YSkx8msRpU25hVrBDAhB4Qsd'; // Ordner "Kundendatenbank"
 var DATA_FOLDER_NAME = 'ELUH-App Daten';
-var BACKEND_VERSION = '1.1.0';
+var BACKEND_VERSION = '1.2.0';
+var TZ = 'Europe/Berlin';
 var CACHE_FOLDER_NAME = 'Offline-Kopien';
 var MAX_BATCH_CHARS = 22 * 1024 * 1024;
 var DRIVE_API = 'https://www.googleapis.com/drive/v3/';
@@ -35,15 +36,33 @@ function setup() {
   if (!p.getProperty('APP_KEY')) p.setProperty('APP_KEY', makeKey_());
   if (!p.getProperty('ROOT_ID')) p.setProperty('ROOT_ID', ROOT_ID_DEFAULT);
   dataFolder_();
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    var h = t.getHandlerFunction();
-    if (h === 'cronRefresh' || h === 'cronRebuild') ScriptApp.deleteTrigger(t);
-  });
-  ScriptApp.newTrigger('cronRefresh').timeBased().everyMinutes(15).create();
-  ScriptApp.newTrigger('cronRebuild').timeBased().atHour(3).everyDays(1).create();
+  installTriggers_();
   var idx = rebuildIndex_();
   Logger.log('Index aufgebaut: ' + Object.keys(idx.items).length + ' Einträge');
   Logger.log('APP-SCHLÜSSEL: ' + p.getProperty('APP_KEY'));
+}
+
+function installTriggers_() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    var h = t.getHandlerFunction();
+    if (h === 'cronRefresh' || h === 'cronRebuild' || h === 'cronReminders') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('cronRefresh').timeBased().everyMinutes(15).create();
+  ScriptApp.newTrigger('cronRebuild').timeBased().atHour(3).everyDays(1).create();
+  ScriptApp.newTrigger('cronReminders').timeBased().everyMinutes(5).create();
+}
+
+/** Einmal nach dem Update auf 1.2 ausführen: Büro-Schlüssel, Push-Schlüssel, Kalender-Link, Erinnerungs-Trigger */
+function setupV12() {
+  var p = props_();
+  if (!p.getProperty('OFFICE_KEY')) p.setProperty('OFFICE_KEY', makeKey_());
+  if (!p.getProperty('ICS_TOKEN')) p.setProperty('ICS_TOKEN', makeKey_().replace(/-/g, '').toLowerCase());
+  vapidKeys_();
+  installTriggers_();
+  var t0 = Date.now();
+  var jwt = vapidJwt_('https://web.push.apple.com');
+  Logger.log('Push-Signatur ok (' + (Date.now() - t0) + ' ms), Länge ' + jwt.length);
+  Logger.log('BÜRO-SCHLÜSSEL: ' + p.getProperty('OFFICE_KEY'));
 }
 
 function zeigeSchluessel() {
@@ -63,7 +82,13 @@ function cronRebuild() { withLock_(function () { rebuildIndex_(); }); }
 // Web-App-Schnittstelle
 // ============================================================
 
-function doGet() {
+function doGet(e) {
+  var prm = (e && e.parameter) || {};
+  if (prm.ics) {
+    var tok = props_().getProperty('ICS_TOKEN');
+    if (!tok || prm.ics !== tok) return ContentService.createTextOutput('Kein Zugriff').setMimeType(ContentService.MimeType.TEXT);
+    return ContentService.createTextOutput(buildIcs_()).setMimeType(ContentService.MimeType.ICAL);
+  }
   return json_({ ok: true, app: 'eluh-backend', version: BACKEND_VERSION });
 }
 
@@ -74,10 +99,13 @@ function doPost(e) {
   } catch (err) {
     return json_({ ok: false, error: 'Ungültige Anfrage' });
   }
-  if (!checkKey_(req.key)) {
+  var role = roleForKey_(req.key);
+  if (!role) {
     Utilities.sleep(800);
     return json_({ ok: false, error: 'auth' });
   }
+  if (role === 'buero' && !OFFICE_ACTIONS[req.action]) return json_({ ok: false, error: 'Keine Berechtigung' });
+  req.role = role;
   try {
     var out = route_(req);
     out.ok = true;
@@ -88,12 +116,29 @@ function doPost(e) {
 }
 
 var WRITE_ACTIONS = { upload: 1, createCustomer: 1, createFolder: 1, fileAuftrag: 1, uploadToPath: 1 };
+// Was der Büro-Zugang darf (nur lesen, freigegebene Aufträge, Termine, Benachrichtigungen)
+var OFFICE_ACTIONS = { ping: 1, index: 1, getFile: 1, getFiles: 1, thumbs: 1, officeList: 1, officeMark: 1, termine: 1, pushSubscribe: 1, notifications: 1, pushTest: 1 };
 
 function route_(req) {
   if (WRITE_ACTIONS[req.action]) props_().setProperty('LAST_REFRESH', '0');
   switch (req.action) {
     case 'ping':
-      return { now: Date.now(), version: BACKEND_VERSION, root: rootId_() };
+      return { now: Date.now(), version: BACKEND_VERSION, root: rootId_(), role: req.role, vapidKey: vapidKeys_().pub, ics: props_().getProperty('ICS_TOKEN') || null };
+    case 'officeKey':
+      return apiOfficeKey_(req);
+    case 'officeList':
+      return apiOfficeList_(req);
+    case 'officeMark':
+      return apiOfficeMark_(req);
+    case 'termine':
+      return apiTermine_(req);
+    case 'pushSubscribe':
+      return apiPushSubscribe_(req);
+    case 'notifications':
+      return apiNotifications_(req);
+    case 'pushTest':
+      notify_([req.deviceId], 'ELUH App', 'Benachrichtigungen funktionieren ✓', '#/');
+      return { sent: true };
     case 'index':
       return apiIndex_(req);
     case 'sync':
@@ -153,13 +198,34 @@ function apiIndex_(req) {
  * Konfliktregel: neuerer updatedAt gewinnt.
  */
 function apiSync_(req) {
+  var shareNotes = [];
+  var res = apiSyncLocked_(req, shareNotes);
+  if (shareNotes.length) {
+    var office = devicesFor_(function (d) { return d.role === 'buero'; });
+    shareNotes.forEach(function (r) {
+      var f = r.f || {};
+      notify_(office, 'Neuer Auftrag fürs Büro', [f.kunde_name || r.customerName || 'Ohne Kunde', f.art, f.auftrags_nr ? 'Nr. ' + f.auftrags_nr : ''].filter(Boolean).join(' · '), '#/buero');
+    });
+  }
+  return res;
+}
+
+function apiSyncLocked_(req, shareNotes) {
   return withLock_(function () {
     var db = readJson_('auftraege.json') || { seq: 0, records: {} };
     var changed = false;
+    var newlyShared = [];
     (req.changes || []).forEach(function (r) {
       if (!r || !r.id) return;
       var ex = db.records[r.id];
       if (!ex || Number(r.updatedAt || 0) > Number(ex.updatedAt || 0)) {
+        // Druck-/Abrechnungsstatus setzt nur das Büro → vom Server übernehmen
+        if (ex && ex.office) {
+          r.office = r.office || {};
+          ['printedAt', 'printedBy', 'billedAt', 'billedBy'].forEach(function (k) { if (ex.office[k] && !r.office[k]) r.office[k] = ex.office[k]; });
+        }
+        var wasShared = !!(ex && ex.office && ex.office.shared);
+        if (r.office && r.office.shared && !wasShared && !r.deleted) newlyShared.push(r);
         db.seq += 1;
         r.seq = db.seq;
         db.records[r.id] = r;
@@ -167,6 +233,7 @@ function apiSync_(req) {
       }
     });
     if (changed) writeJson_('auftraege.json', db);
+    newlyShared.forEach(function (r) { shareNotes.push(r); });
     var since = Number(req.since || 0);
     var out = [];
     Object.keys(db.records).forEach(function (id) {
@@ -244,16 +311,382 @@ function apiFileAuftrag_(req) {
   var file = folder.createFile(blob);
   if (req.replaceId && req.replaceId !== file.getId()) trashQuietly_(req.replaceId);
   var moved = movePhotos_(req.photoIds || [], folder);
+  // Stundennachweis als eigenes PDF (nur wenn Zeiten eingetragen sind)
+  var extraFileId = null;
+  if (req.extra && req.extra.data) {
+    var en = uniqueName_(folder, req.extra.name, req.extraReplaceId);
+    var ef = folder.createFile(Utilities.newBlob(Utilities.base64Decode(req.extra.data), 'application/pdf', en));
+    extraFileId = ef.getId();
+    if (req.extraReplaceId && req.extraReplaceId !== extraFileId) trashQuietly_(req.extraReplaceId);
+  } else if (req.extraReplaceId) {
+    trashQuietly_(req.extraReplaceId);
+  }
   return {
     fileId: file.getId(),
     folderId: folder.getId(),
     path: path,
     url: file.getUrl(),
     moved: moved,
+    extraFileId: extraFileId,
     items: created.concat([rowFromDriveApp_(file, folder.getId())])
   };
 }
 
+
+
+// ============================================================
+// Rollen: Chef (voller Zugriff) und Büro (eingeschränkt)  – ab 1.2
+// ============================================================
+
+function roleForKey_(k) {
+  var n = normKey_(k);
+  if (!n) return null;
+  var chef = props_().getProperty('APP_KEY');
+  if (chef && n === normKey_(chef)) return 'chef';
+  var office = props_().getProperty('OFFICE_KEY');
+  if (office && n === normKey_(office)) return 'buero';
+  return null;
+}
+
+/** Büro-Schlüssel anzeigen oder neu erzeugen (nur Chef) */
+function apiOfficeKey_(req) {
+  var p = props_();
+  if (req.renew || !p.getProperty('OFFICE_KEY')) p.setProperty('OFFICE_KEY', makeKey_());
+  return { officeKey: p.getProperty('OFFICE_KEY') };
+}
+
+/** Freigegebene Aufträge fürs Büro (keine Entwürfe, nichts Privates) */
+function apiOfficeList_(req) {
+  var db = readJson_('auftraege.json') || { seq: 0, records: {} };
+  var out = [];
+  Object.keys(db.records).forEach(function (id) {
+    var r = db.records[id];
+    if (r.kind === 'profile' || r.deleted || !r.office || !r.office.shared) return;
+    out.push({
+      id: r.id, f: r.f, material: r.material, sig: r.sig, zeiten: r.zeiten, ablage: r.ablage,
+      customerId: r.customerId, customerName: r.customerName, drive: r.drive, status: r.status,
+      office: r.office, updatedAt: r.updatedAt, finishedAt: r.finishedAt
+    });
+  });
+  out.sort(function (a, b) { return Number(b.office.sharedAt || 0) - Number(a.office.sharedAt || 0); });
+  return { records: out.slice(0, 400), seq: db.seq };
+}
+
+/** Büro markiert "gedruckt" / "abgerechnet" */
+function apiOfficeMark_(req) {
+  return withLock_(function () {
+    var db = readJson_('auftraege.json') || { seq: 0, records: {} };
+    var r = db.records[req.id];
+    if (!r || !r.office || !r.office.shared) throw new Error('Auftrag nicht freigegeben');
+    var field = req.field === 'billed' ? 'billed' : 'printed';
+    if (req.value === false) { delete r.office[field + 'At']; delete r.office[field + 'By']; }
+    else { r.office[field + 'At'] = Date.now(); r.office[field + 'By'] = String(req.by || 'Büro').slice(0, 40); }
+    db.seq += 1;
+    r.seq = db.seq;
+    writeJson_('auftraege.json', db);
+    return { office: r.office };
+  });
+}
+
+// ============================================================
+// Termine (für Chef und Büro) + Erinnerungen
+// Termin: {id, title, date:'JJJJ-MM-TT', time:'HH:MM', end:'HH:MM', allDay, customerId, customerName,
+//          address, person, note, remind:[Minuten], createdBy, updatedAt, deleted}
+// ============================================================
+
+function terminStart_(t) {
+  if (!t || !t.date) return 0;
+  var time = t.allDay || !t.time ? '07:00' : t.time;
+  return Utilities.parseDate(t.date + ' ' + time, TZ, 'yyyy-MM-dd HH:mm').getTime();
+}
+
+function fmtTermin_(t) {
+  var d = String(t.date || '').split('-');
+  var s = d.length === 3 ? Number(d[2]) + '.' + Number(d[1]) + '.' : '';
+  if (!t.allDay && t.time) s += ' ' + t.time + ' Uhr';
+  return s;
+}
+
+function apiTermine_(req) {
+  var res = withLock_(function () {
+    var db = readJson_('termine.json') || { seq: 0, records: {} };
+    var changed = false, events = [];
+    (req.changes || []).forEach(function (t) {
+      if (!t || !t.id) return;
+      var ex = db.records[t.id];
+      if (!ex || Number(t.updatedAt || 0) > Number(ex.updatedAt || 0)) {
+        if (!t.deleted) {
+          if (!ex) events.push({ kind: 'neu', t: t });
+          else if (ex.date !== t.date || ex.time !== t.time) events.push({ kind: 'geändert', t: t });
+        }
+        db.seq += 1;
+        t.seq = db.seq;
+        db.records[t.id] = t;
+        changed = true;
+      }
+    });
+    if (changed) writeJson_('termine.json', db);
+    var since = Number(req.since || 0);
+    var out = [];
+    Object.keys(db.records).forEach(function (id) { if (Number(db.records[id].seq || 0) > since) out.push(db.records[id]); });
+    return { seq: db.seq, records: out, events: events };
+  });
+  // alle anderen Geräte informieren
+  res.events.forEach(function (ev) {
+    var t = ev.t;
+    var targets = devicesFor_(function (d, id) { return id !== req.deviceId; });
+    notify_(targets, (ev.kind === 'neu' ? 'Neuer Termin' : 'Termin geändert') + (t.createdBy ? ' (' + t.createdBy + ')' : ''),
+      [fmtTermin_(t), t.title, t.customerName].filter(Boolean).join(' · '), '#/termine/' + t.id);
+  });
+  delete res.events;
+  return res;
+}
+
+/** Läuft alle 5 Minuten: fällige Erinnerungen als Push verschicken */
+function cronReminders() {
+  var p = props_();
+  var now = Date.now();
+  var last = Number(p.getProperty('REMIND_LAST') || 0) || now - 5 * 60 * 1000;
+  p.setProperty('REMIND_LAST', String(now));
+  var db = readJson_('termine.json');
+  if (!db) return;
+  Object.keys(db.records).forEach(function (id) {
+    var t = db.records[id];
+    if (t.deleted || !t.date) return;
+    var start = terminStart_(t);
+    (t.remind || []).forEach(function (min) {
+      var at = start - Number(min) * 60000;
+      if (at > last && at <= now) {
+        var targets = devicesFor_(function (d) {
+          return d.role === 'chef' || (t.person && d.name && d.name.toLowerCase().indexOf(String(t.person).toLowerCase()) >= 0);
+        });
+        var when = min >= 1440 ? 'Morgen' : min >= 60 ? 'In ' + Math.round(min / 60) + ' Std.' : min > 0 ? 'In ' + min + ' Min.' : 'Jetzt';
+        notify_(targets, when + ': ' + (t.title || 'Termin'), [fmtTermin_(t), t.customerName || t.address, t.person].filter(Boolean).join(' · '), '#/termine/' + t.id);
+      }
+    });
+  });
+}
+
+// ============================================================
+// Kalender-Abo (Apple/Google Kalender) – webcal://…/exec?ics=TOKEN
+// ============================================================
+
+function icsEsc_(s) { return String(s || '').replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/([,;])/g, '\\$1'); }
+function icsUtc_(ms) { return Utilities.formatDate(new Date(ms), 'UTC', "yyyyMMdd'T'HHmmss'Z'"); }
+function icsFold_(line) {
+  var out = [];
+  while (line.length > 74) { out.push(line.slice(0, 74)); line = ' ' + line.slice(74); }
+  out.push(line);
+  return out.join('\r\n');
+}
+
+function buildIcs_() {
+  var db = readJson_('termine.json') || { records: {} };
+  var lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//eluh Anlagen Kyritz//ELUH App//DE', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
+    'X-WR-CALNAME:ELUH Termine', 'X-WR-TIMEZONE:Europe/Berlin', 'REFRESH-INTERVAL;VALUE=DURATION:PT15M', 'X-PUBLISHED-TTL:PT15M'];
+  var minDate = Date.now() - 60 * 864e5;
+  Object.keys(db.records).forEach(function (id) {
+    var t = db.records[id];
+    if (t.deleted || !t.date) return;
+    var start = terminStart_(t);
+    if (start < minDate) return;
+    lines.push('BEGIN:VEVENT');
+    lines.push('UID:' + t.id + '@eluh-app');
+    lines.push('DTSTAMP:' + icsUtc_(Number(t.updatedAt || Date.now())));
+    if (t.allDay || !t.time) {
+      var d = t.date.replace(/-/g, '');
+      var next = Utilities.formatDate(new Date(Utilities.parseDate(t.date + ' 12:00', TZ, 'yyyy-MM-dd HH:mm').getTime() + 864e5), TZ, 'yyyyMMdd');
+      lines.push('DTSTART;VALUE=DATE:' + d);
+      lines.push('DTEND;VALUE=DATE:' + next);
+    } else {
+      var end = t.end ? Utilities.parseDate(t.date + ' ' + t.end, TZ, 'yyyy-MM-dd HH:mm').getTime() : start + 3600000;
+      if (end <= start) end = start + 3600000;
+      lines.push('DTSTART:' + icsUtc_(start));
+      lines.push('DTEND:' + icsUtc_(end));
+    }
+    lines.push(icsFold_('SUMMARY:' + icsEsc_((t.title || 'Termin') + (t.person ? ' (' + t.person + ')' : ''))));
+    if (t.address || t.customerName) lines.push(icsFold_('LOCATION:' + icsEsc_(t.address || t.customerName)));
+    var desc = [t.customerName, t.note, t.createdBy ? 'Eingetragen von ' + t.createdBy : ''].filter(Boolean).join('\n');
+    if (desc) lines.push(icsFold_('DESCRIPTION:' + icsEsc_(desc)));
+    (t.remind || []).forEach(function (min) {
+      lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:' + icsEsc_(t.title || 'Termin'), 'TRIGGER:-PT' + Number(min) + 'M', 'END:VALARM');
+    });
+    lines.push('END:VEVENT');
+  });
+  lines.push('END:VCALENDAR');
+  return lines.join('\r\n') + '\r\n';
+}
+
+// ============================================================
+// Push-Benachrichtigungen (Web Push, VAPID mit ECDSA P-256)
+// Gesendet wird ein leerer Push; die App holt sich den Text dann selbst ab.
+// ============================================================
+
+function apiPushSubscribe_(req) {
+  return withLock_(function () {
+    var db = readJson_('push.json') || { devices: {} };
+    if (!req.deviceId) throw new Error('Geräte-ID fehlt');
+    var d = db.devices[req.deviceId] || {};
+    d.role = req.role;
+    d.name = String(req.name || d.name || '').slice(0, 40);
+    if (req.subscription !== undefined) d.sub = req.subscription;
+    d.updatedAt = Date.now();
+    db.devices[req.deviceId] = d;
+    writeJson_('push.json', db);
+    return { saved: true };
+  });
+}
+
+function devicesFor_(filterFn) {
+  var db = readJson_('push.json') || { devices: {} };
+  return Object.keys(db.devices).filter(function (id) { return filterFn(db.devices[id], id); });
+}
+
+function apiNotifications_(req) {
+  var db = readJson_('notifications.json') || { seq: 0, items: [] };
+  var since = Number(req.since || 0);
+  var items = db.items.filter(function (n) { return n.seq > since && (n.targets || []).indexOf(req.deviceId) >= 0; });
+  return { seq: db.seq, items: items.slice(-10).map(function (n) { return { id: n.id, seq: n.seq, at: n.at, title: n.title, body: n.body, url: n.url }; }) };
+}
+
+/** Mitteilung speichern und an die Geräte pushen */
+function notify_(targets, title, body, url) {
+  targets = (targets || []).filter(Boolean);
+  if (!targets.length) return 0;
+  var item;
+  withLock_(function () {
+    var db = readJson_('notifications.json') || { seq: 0, items: [] };
+    db.seq += 1;
+    item = { id: 'n' + db.seq, seq: db.seq, at: Date.now(), title: title, body: body, url: url || '#/', targets: targets };
+    db.items.push(item);
+    if (db.items.length > 300) db.items = db.items.slice(-300);
+    writeJson_('notifications.json', db);
+  });
+  var push = readJson_('push.json') || { devices: {} };
+  var reqs = [], ids = [];
+  targets.forEach(function (id) {
+    var d = push.devices[id];
+    if (!d || !d.sub || !d.sub.endpoint) return;
+    try {
+      var aud = d.sub.endpoint.match(/^https:\/\/[^/]+/)[0];
+      reqs.push({
+        url: d.sub.endpoint, method: 'post', payload: '', muteHttpExceptions: true,
+        headers: { Authorization: 'vapid t=' + vapidJwt_(aud) + ', k=' + vapidKeys_().pub, TTL: '86400', Urgency: 'high' }
+      });
+      ids.push(id);
+    } catch (e) { /* Gerät überspringen */ }
+  });
+  if (!reqs.length) return 0;
+  var res = UrlFetchApp.fetchAll(reqs);
+  var gone = [];
+  res.forEach(function (r, i) { var c = r.getResponseCode(); if (c === 404 || c === 410) gone.push(ids[i]); });
+  if (gone.length) {
+    withLock_(function () {
+      var db = readJson_('push.json') || { devices: {} };
+      gone.forEach(function (id) { if (db.devices[id]) delete db.devices[id].sub; });
+      writeJson_('push.json', db);
+    });
+  }
+  return reqs.length - gone.length;
+}
+
+// ---------- ECDSA P-256 (BigInt) ----------
+var EC_ = null;
+function ec_() {
+  if (EC_) return EC_;
+  var B = BigInt;
+  EC_ = {
+    p: B('0xffffffff00000001000000000000000000000000ffffffffffffffffffffffff'),
+    a: B('0xffffffff00000001000000000000000000000000fffffffffffffffffffffffc'),
+    n: B('0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551'),
+    G: [B('0x6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296'), B('0x4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5')]
+  };
+  return EC_;
+}
+function mod_(a, m) { var r = a % m; return r < BigInt(0) ? r + m : r; }
+function inv_(a, m) {
+  var t = BigInt(0), nt = BigInt(1), r = m, nr = mod_(a, m);
+  while (nr !== BigInt(0)) { var q = r / nr; var tmp = t - q * nt; t = nt; nt = tmp; tmp = r - q * nr; r = nr; nr = tmp; }
+  return mod_(t, m);
+}
+function ptAdd_(P, Q) {
+  var c = ec_(), p = c.p;
+  if (!P) return Q;
+  if (!Q) return P;
+  var l;
+  if (P[0] === Q[0]) {
+    if (mod_(P[1] + Q[1], p) === BigInt(0)) return null;
+    l = mod_((BigInt(3) * P[0] * P[0] + c.a) * inv_(BigInt(2) * P[1], p), p);
+  } else {
+    l = mod_((Q[1] - P[1]) * inv_(Q[0] - P[0], p), p);
+  }
+  var x = mod_(l * l - P[0] - Q[0], p);
+  return [x, mod_(l * (P[0] - x) - P[1], p)];
+}
+function ptMul_(P, k) {
+  var R = null, A = P;
+  while (k > BigInt(0)) { if (k & BigInt(1)) R = ptAdd_(R, A); A = ptAdd_(A, A); k = k >> BigInt(1); }
+  return R;
+}
+function bytesToBig_(bytes) { var h = '0x'; for (var i = 0; i < bytes.length; i++) h += ((bytes[i] + 256) % 256).toString(16).padStart(2, '0'); return BigInt(h === '0x' ? '0' : h); }
+function bigToBytes_(b, len) {
+  var h = b.toString(16).padStart(len * 2, '0');
+  var out = [];
+  for (var i = 0; i < len; i++) { var v = parseInt(h.substr(i * 2, 2), 16); out.push(v > 127 ? v - 256 : v); }
+  return out;
+}
+function b64url_(bytes) { return Utilities.base64EncodeWebSafe(bytes).replace(/=+$/, ''); }
+
+function vapidKeys_() {
+  var p = props_();
+  var d = p.getProperty('VAPID_D'), pub = p.getProperty('VAPID_PUB');
+  if (d && pub) return { d: BigInt('0x' + d), pub: pub };
+  var c = ec_();
+  var seed = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, Utilities.getUuid() + Utilities.getUuid() + Date.now() + Math.random());
+  var k = mod_(bytesToBig_(seed), c.n - BigInt(1)) + BigInt(1);
+  var Q = ptMul_(c.G, k);
+  pub = b64url_([4].concat(bigToBytes_(Q[0], 32), bigToBytes_(Q[1], 32)));
+  p.setProperty('VAPID_D', k.toString(16));
+  p.setProperty('VAPID_PUB', pub);
+  return { d: k, pub: pub };
+}
+
+function ecdsaSign_(msgBytes, d) {
+  var c = ec_();
+  var hash = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, msgBytes);
+  var z = bytesToBig_(hash);
+  var dBytes = bigToBytes_(d, 32);
+  for (var ctr = 0; ctr < 50; ctr++) {
+    var kb = Utilities.computeHmacSha256Signature(hash.concat([ctr]), dBytes);
+    var k = mod_(bytesToBig_(kb), c.n);
+    if (k === BigInt(0)) continue;
+    var R = ptMul_(c.G, k);
+    var r = mod_(R[0], c.n);
+    if (r === BigInt(0)) continue;
+    var s = mod_(inv_(k, c.n) * (z + r * d), c.n);
+    if (s === BigInt(0)) continue;
+    return bigToBytes_(r, 32).concat(bigToBytes_(s, 32));
+  }
+  throw new Error('Signatur fehlgeschlagen');
+}
+
+/** VAPID-JWT je Push-Dienst (12 h gültig, wird zwischengespeichert) */
+function vapidJwt_(aud) {
+  var p = props_();
+  var key = 'VAPID_JWT_' + aud.replace(/[^a-z0-9]/gi, '_');
+  var cached = p.getProperty(key);
+  if (cached) {
+    var parts = cached.split('|');
+    if (Number(parts[0]) > Date.now() + 3600000) return parts[1];
+  }
+  var exp = Math.floor(Date.now() / 1000) + 12 * 3600;
+  var enc = function (o) { return b64url_(Utilities.newBlob(JSON.stringify(o)).getBytes()); };
+  var input = enc({ typ: 'JWT', alg: 'ES256' }) + '.' + enc({ aud: aud, exp: exp, sub: 'mailto:dpfaue12@gmx.de' });
+  var sig = ecdsaSign_(Utilities.newBlob(input).getBytes(), vapidKeys_().d);
+  var jwt = input + '.' + b64url_(sig);
+  p.setProperty(key, (exp * 1000) + '|' + jwt);
+  return jwt;
+}
 
 // ============================================================
 // Offline-Kopien, Vorschaubilder, Fotos (ab Version 1.1)

@@ -107,6 +107,22 @@
     });
   }
 
+  /** Dialog mit mehreren Antworten → liefert den Schlüssel der gewählten Antwort (oder null) */
+  function choiceBox(title, html, buttons) {
+    return new Promise(function (resolve) {
+      var done = false;
+      var sheet = openModal(
+        '<div class="sheet-head"><h3>' + esc(title) + '</h3><button class="btn small ghost" data-close aria-label="Abbrechen">' + ICONS.close + '</button></div>' +
+        '<div class="sheet-body stack"><div>' + html + '</div><div class="stack">' + buttons.map(function (b) {
+          return '<button type="button" class="btn ' + (b.cls || '') + '" data-choice="' + b.key + '" style="width:100%">' + esc(b.label) + '</button>';
+        }).join('') + '</div></div>',
+        { onClose: function () { if (!done) resolve(null); } });
+      $$('[data-choice]', sheet).forEach(function (b) {
+        b.onclick = function () { done = true; closeModal(); resolve(b.getAttribute('data-choice')); };
+      });
+    });
+  }
+
   // ------------------------------------------------------------------
   // PDF-Anzeige & Drucken
   // ------------------------------------------------------------------
@@ -187,7 +203,7 @@
             (navigator.onLine ? ' <button class="btn small" data-orig>Original laden</button>' : ' – Original in Google Drive') + '</div>';
         }
         pb.hidden = false; db.hidden = isIOS();
-        pb.onclick = function () { printBlob(blob, name); };
+        pb.onclick = function () { printBlob(blob, name); if (opts && opts.onPrint) opts.onPrint(); };
         db.onclick = function () { downloadBlob(blob, name); };
         var type = blob.type || '';
         if (type === 'application/pdf') {
@@ -223,11 +239,11 @@
     };
   }
 
-  async function showAuftragPdf(recs) {
+  async function showAuftragPdf(recs, vopts) {
     var title = recs.length === 1 ? auftragTitle(recs[0]) : recs.length + ' Arbeitsaufträge';
-    var v = openViewer(title, { driveUrl: recs.length === 1 && recs[0].drive && recs[0].drive.url });
+    var v = openViewer(title, Object.assign({ driveUrl: recs.length === 1 && recs[0].drive && recs[0].drive.url }, vopts || {}));
     try {
-      var bytes = recs.length === 1 ? await window.PdfGen.build(recs[0]) : await window.PdfGen.merge(recs);
+      var bytes = recs.length === 1 ? await window.PdfGen.buildFull(recs[0]) : await window.PdfGen.merge(recs);
       var name = recs.length === 1 ? window.PdfGen.fileName(recs[0]) : 'Arbeitsauftraege-' + S.isoDate(new Date()) + '.pdf';
       await v.show(new Blob([bytes], { type: 'application/pdf' }), name);
     } catch (e) {
@@ -271,19 +287,62 @@
   };
 
   // ------------------------------------------------------------------
+  // Benachrichtigungen (Push) – Einstellungen
+  // ------------------------------------------------------------------
+  async function renderPushBox(box) {
+    if (!box) return;
+    var s = await S.Settings.get();
+    var st = await S.Push.status();
+    var isBuero = s.role === 'buero';
+    var why = isBuero ? 'neue Aufträge vom Chef, neue Termine und Erinnerungen' : 'neue Termine vom Büro und Termin-Erinnerungen';
+    var html = '<div class="small">Mitteilungen aufs Gerät bei: ' + why + '.</div>' +
+      '<label class="field"><span>Name dieses Geräts / Person</span><input id="devName" value="' + esc(s.deviceName || '') + '" placeholder="z. B. Dominic"></label>';
+    if (st === 'unsupported') {
+      html += '<div class="notice warn">' + (isIOS() && !S.Push.standalone() ? 'Auf iPhone/iPad funktionieren Mitteilungen nur, wenn die App über „Zum Home-Bildschirm“ installiert ist und von dort gestartet wird.' : 'Dieser Browser unterstützt keine Mitteilungen.') + '</div>';
+    } else if (st === 'denied') {
+      html += '<div class="notice warn">Mitteilungen sind für diese App blockiert. In den Geräte-Einstellungen (Mitteilungen → ELUH) wieder erlauben.</div>';
+    } else if (st === 'on') {
+      html += '<div class="notice ok">Mitteilungen sind auf diesem Gerät eingeschaltet.</div><div class="btn-row"><button type="button" class="btn small" id="pushTest">Test-Mitteilung senden</button><button type="button" class="btn small ghost" id="pushOff">Ausschalten</button></div>';
+    } else {
+      html += '<button type="button" class="btn primary" id="pushOn">Mitteilungen einschalten</button>';
+    }
+    box.innerHTML = html;
+    $('#devName', box).onchange = async function () {
+      await S.Settings.set({ deviceName: this.value.trim() });
+      S.Push.register().catch(function () {});
+      toast('Gespeichert');
+    };
+    var b;
+    if ((b = $('#pushOn', box))) b.onclick = async function () {
+      b.disabled = true;
+      try { await S.Push.enable(); toast('Mitteilungen eingeschaltet'); } catch (e) { toast(e.message, true); }
+      renderPushBox(box);
+    };
+    if ((b = $('#pushOff', box))) b.onclick = async function () { await S.Push.disable(); renderPushBox(box); };
+    if ((b = $('#pushTest', box))) b.onclick = async function () {
+      try { await S.Push.test(); toast('Test gesendet – kommt in wenigen Sekunden'); } catch (e) { toast(e.message, true); }
+    };
+  }
+
+  // ------------------------------------------------------------------
   // Router
   // ------------------------------------------------------------------
   var current = { name: null, cleanup: null };
   var routes = [];
   function route(re, fn, tab) { routes.push({ re: re, fn: fn, tab: tab }); }
 
+  var CHEF_ONLY = /^#\/(auftraege|auftrag\/|sync)/;
   async function router() {
-    var hash = location.hash || '#/auftraege';
     var s = await S.Settings.get();
+    var isBuero = s.role === 'buero';
+    document.body.classList.toggle('role-buero', isBuero);
+    var hash = location.hash || (isBuero ? '#/buero' : '#/auftraege');
     if (S.backendConfigured() && !s.key && !s.skipSetup && hash.indexOf('#/setup') !== 0) {
       location.replace('#/setup');
       return;
     }
+    if (isBuero && CHEF_ONLY.test(hash)) { location.replace('#/buero'); return; }
+    if (!isBuero && /^#\/(buero|konto)/.test(hash)) { location.replace('#/auftraege'); return; }
     for (var i = 0; i < routes.length; i++) {
       var m = routes[i].re.exec(hash);
       if (m) {
@@ -297,7 +356,7 @@
         return;
       }
     }
-    location.replace('#/auftraege');
+    location.replace(isBuero ? '#/buero' : '#/auftraege');
   }
   window.addEventListener('hashchange', router);
 
@@ -320,23 +379,36 @@
       '<h1 style="margin:0;font-size:22px">Mit Google Drive verbinden</h1>' +
       '<p class="muted" style="margin:0">Einmal pro Gerät den App-Schlüssel eingeben. Danach synchronisiert sich alles automatisch – auch nach Offline-Phasen.</p>' +
       '<label class="field"><span>App-Schlüssel</span><input class="key-input" id="keyIn" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX-XXXX"></label>' +
+      '<label class="field"><span>Dein Name (für Termine und Erinnerungen)</span><input id="nameIn" autocomplete="name" placeholder="z. B. Dominic oder Anja"></label>' +
       '<div id="setupMsg"></div>' +
       '<div class="btn-row"><button class="btn primary" id="keyGo">Verbinden</button>' +
       '<button class="btn ghost" id="keySkip">Erstmal ohne Verbindung</button></div></div>';
     var m = /[#&?]k=([A-Za-z0-9-]+)/.exec(location.href);
     if (m) $('#keyIn').value = m[1];
+    var s0 = await S.Settings.get();
+    if (s0.deviceName) $('#nameIn').value = s0.deviceName;
+    var mn = /[?&]n=([^&]+)/.exec(location.href);
+    if (mn) $('#nameIn').value = decodeURIComponent(mn[1]);
     $('#keyGo').onclick = async function () {
       var key = $('#keyIn').value.trim();
+      var name = $('#nameIn').value.trim();
       if (!key) return;
+      if (!name) { toast('Bitte deinen Namen eingeben', true); return; }
       var btn = this;
       btn.disabled = true;
       $('#setupMsg').innerHTML = '<div class="notice info"><span class="spinner"></span> Verbindung wird geprüft…</div>';
       try {
-        await S.api('ping', {}, { key: key, timeout: 30000 });
-        await S.Settings.set({ key: key, skipSetup: false });
+        var pj = await S.api('ping', {}, { key: key, timeout: 30000 });
+        var before = await S.Settings.get();
+        if (before.role && before.role !== pj.role) {
+          // Gerät wechselt zwischen Chef- und Büro-Zugang → lokale Auftragsdaten entfernen
+          await S.DB.clear('auftraege'); await S.DB.clear('outbox'); await S.DB.put('kv', 0, 'seq'); await S.DB.put('kv', [], 'officeList');
+        }
+        await S.Settings.set({ key: key, skipSetup: false, role: pj.role, vapidKey: pj.vapidKey, icsToken: pj.ics, deviceName: name });
         S.Sync.state.authError = false;
-        toast('Verbunden – Kundendatenbank wird geladen');
-        location.hash = '#/auftraege';
+        S.Push.register().catch(function () {});
+        toast(pj.role === 'buero' ? 'Verbunden (Büro-Zugang)' : 'Verbunden – Kundendatenbank wird geladen');
+        location.hash = pj.role === 'buero' ? '#/buero' : '#/auftraege';
         S.Sync.run({ fullIndex: true });
       } catch (e) {
         $('#setupMsg').innerHTML = '<div class="notice err">' + esc(e.auth ? 'Schlüssel stimmt nicht.' : e.message) + '</div>';
@@ -361,6 +433,19 @@
     if (!rec.customerId) return { cls: 'info', text: 'Ohne Kunde', key: 'fertig' };
     return { cls: 'ok', text: 'Abgelegt', key: 'fertig' };
   }
+  /** Freigabe stellt der Chef ein, Druck-/Abrechnungsstatus kommt vom Büro (Server) */
+  function mergeOffice(local, server) {
+    var so = (server && server.office) || {}, lo = local.office;
+    if (!lo) return server && server.office;
+    return Object.assign({}, so, { shared: lo.shared, sharedAt: lo.sharedAt || so.sharedAt });
+  }
+  function officeStatus(r) {
+    var o = r.office;
+    if (!o || !o.shared) return null;
+    if (o.billedAt) return { cls: 'ok', text: 'Büro: abgerechnet', key: 'billed' };
+    if (o.printedAt) return { cls: 'info', text: 'Büro: gedruckt', key: 'printed' };
+    return { cls: 'warn', text: 'Im Büro', key: 'shared' };
+  }
   function auftragTitle(r) { return (r.f && r.f.kunde_name) || r.customerName || 'Ohne Kunde'; }
   function auftragDate(r) { return (r.ablage && r.ablage.datum) || (r.f && r.f.datum_annahme) || S.isoDate(new Date(r.createdAt)); }
 
@@ -373,7 +458,7 @@
       '<div class="chips" id="filters"></div>' +
       '<div id="list"></div></div>' +
       '<div class="actionbar selbar" id="selbar" hidden></div>';
-    var filters = [['alle', 'Alle'], ['entwurf', 'Entwürfe'], ['offen', 'Noch nicht abgelegt'], ['fertig', 'Abgelegt']];
+    var filters = [['alle', 'Alle'], ['entwurf', 'Entwürfe'], ['offen', 'Noch nicht abgelegt'], ['fertig', 'Abgelegt'], ['buero', 'Ans Büro geschickt']];
     var ranges = [['alle', 'Gesamter Zeitraum'], ['heute', 'Heute'], ['7', '7 Tage'], ['30', '30 Tage']];
     function drawChips() {
       $('#filters').innerHTML = filters.map(function (f) {
@@ -396,7 +481,8 @@
       for (var i = 0; i < list.length; i++) {
         var r = list[i];
         var st = await auftragStatus(r, ops);
-        if (listState.filter !== 'alle' && st.key !== listState.filter) continue;
+        if (listState.filter === 'buero') { if (!officeStatus(r)) continue; }
+        else if (listState.filter !== 'alle' && st.key !== listState.filter) continue;
         if (minDate && auftragDate(r) < minDate) continue;
         var f = r.f || {};
         if (!matchQuery([f.kunde_name, f.kunde_name_zusatz, f.kunde_adresse, f.auftrags_nr, f.art, f.arbeitsumfang, r.customerName].join(' '), listState.q)) continue;
@@ -415,7 +501,8 @@
             '<input type="checkbox" aria-label="Zum Drucken auswählen" ' + (listState.sel.has(r.id) ? 'checked' : '') + '>' +
             '<a class="main" href="#/auftrag/' + r.id + '" style="text-decoration:none;color:inherit"><div class="title">' + esc(auftragTitle(r)) + '</div>' +
             '<div class="meta">' + esc(meta || '–') + '</div></a>' +
-            '<span class="badge ' + x.st.cls + '">' + x.st.text + '</span></div>';
+            '<span class="badges">' + (officeStatus(r) ? '<span class="badge ' + officeStatus(r).cls + '">' + officeStatus(r).text + '</span>' : '') +
+            '<span class="badge ' + x.st.cls + '">' + x.st.text + '</span></span></div>';
         }).join('') + '</div>';
         $$('#list .row').forEach(function (row) {
           var cb = $('input', row);
@@ -526,6 +613,13 @@
       '<div class="grid2" style="margin-top:14px">' + input('mat_gesamt_summe', 'Gesamt Material') + input('datum_fertigstellung', 'Ort, Datum (Materialschein)') + '</div>' +
       '<datalist id="einheiten">' + EINHEITEN.map(function (e) { return '<option value="' + e + '">'; }).join('') + '</datalist>' +
       '</section>' +
+      '<section class="form-section"><h3>Arbeitszeit</h3>' +
+      '<div class="zeit-row zeit-head"><span>Datum</span><span>Monteur</span><span>Stunden</span><span></span></div>' +
+      '<div id="zeitRows"></div>' +
+      '<div class="btn-row" style="margin-top:8px;align-items:center"><button type="button" class="btn small" id="addZeit">' + ICONS.plus + '<span>Zeile</span></button>' +
+      '<span class="small" id="zeitSum"></span></div>' +
+      '<datalist id="monteure"></datalist>' +
+      '<p class="small muted" style="margin:8px 2px 0">Wird als eigenes PDF „Stundennachweis“ im Terminordner abgelegt – nur wenn Stunden eingetragen sind.</p></section>' +
       '<section class="form-section"><h3>Fotos</h3>' +
       '<div class="photo-grid" id="photoGrid"></div>' +
       '<div class="btn-row" style="margin-top:10px">' +
@@ -638,7 +732,7 @@
     function setSaveState(t) { var el = $('#saveState'); if (el) el.textContent = t; }
     var saving = debounce(async function () {
       var cur = await S.Auftraege.get(rec.id);
-      if (cur) { rec.photos = cur.photos || []; rec.drive = cur.drive; }
+      if (cur) { rec.photos = cur.photos || []; rec.drive = cur.drive; rec.office = mergeOffice(rec, cur); }
       await S.Auftraege.save(rec);
       setSaveState('Gespeichert ' + fmtTime(Date.now()));
       drawStatus();
@@ -664,6 +758,12 @@
         else if (st.key === 'offen') html = '<div class="notice warn">Wird abgelegt, sobald eine Verbindung besteht' + (navigator.onLine ? '…' : ' (gerade offline).') + '</div>';
         else if (rec.drive) html = '<div class="notice ok">Abgelegt: ' + esc((rec.drive.path || []).join(' › ')) + ' · ' + fmtDT(rec.drive.filedAt) + '</div>';
       }
+      var o = rec.office;
+      if (o && o.shared) {
+        html += '<div class="notice info" style="margin-top:8px">Ans Büro geschickt ' + fmtDT(o.sharedAt) +
+          (o.printedAt ? ' · gedruckt ' + fmtDT(o.printedAt) + (o.printedBy ? ' (' + esc(o.printedBy) + ')' : '') : ' · noch nicht gedruckt') +
+          (o.billedAt ? ' · abgerechnet ' + fmtDT(o.billedAt) : '') + '</div>';
+      }
       box.innerHTML = html;
       drawActions();
     }
@@ -679,8 +779,18 @@
         '<button class="btn" id="preview">' + ICONS.print + '<span>PDF / Drucken</span></button>' + primary;
       var extra = $('#edExtra');
       if (!extra) return;
-      extra.innerHTML = '<button class="btn ghost small" id="dup">Als neuen Auftrag kopieren</button>' +
+      var shared = rec.office && rec.office.shared;
+      extra.innerHTML = (rec.status === 'fertig' ? '<button class="btn ghost small" id="shareTog">' + (shared ? 'Freigabe fürs Büro zurückziehen' : 'Ans Büro schicken') + '</button>' : '') +
+        '<button class="btn ghost small" id="dup">Als neuen Auftrag kopieren</button>' +
         '<button class="btn ghost danger small" id="del">Auftrag löschen</button>';
+      var stg = $('#shareTog');
+      if (stg) stg.onclick = async function () {
+        rec.office = Object.assign({}, rec.office || {});
+        if (shared) { rec.office.shared = false; toast('Fürs Büro nicht mehr sichtbar'); }
+        else { rec.office.shared = true; rec.office.sharedAt = Date.now(); toast('Ans Büro geschickt'); }
+        await S.Auftraege.save(rec);
+        drawStatus();
+      };
       $('#preview').onclick = async function () { await S.Auftraege.save(rec); showAuftragPdf([rec]); };
       $('#del').onclick = async function () {
         var ok = await confirmBox('Auftrag löschen?', 'Der Auftrag wird auf allen Geräten entfernt.' + (rec.drive ? ' Das bereits abgelegte PDF in der Kundendatenbank bleibt erhalten.' : ''), 'Löschen', true);
@@ -705,15 +815,59 @@
           var ok = await confirmBox('Ohne Kunde ablegen?', 'Es ist kein Kunde aus der Kundendatenbank gewählt. Das PDF landet dann in „ELUH-App Daten › Nicht zugeordnet“. Du kannst später noch einen Kunden wählen und neu ablegen.', 'Trotzdem ablegen');
           if (!ok) return;
         }
+        var alreadyShared = rec.office && rec.office.shared;
+        var choice = alreadyShared ? 'nur' : await choiceBox('Auftrag ablegen',
+          '<p style="margin:0">Der Auftrag wird als PDF beim Kunden abgelegt' + (window.PdfGen.hasZeiten(rec) ? ' (dazu der Stundennachweis)' : '') + '.</p>' +
+          '<p style="margin:8px 0 0"><b>Soll das Büro ihn zum Drucken und Abrechnen bekommen?</b></p>',
+          [{ key: 'buero', label: 'Ablegen und ans Büro schicken', cls: 'primary' }, { key: 'nur', label: 'Nur ablegen' }]);
+        if (!choice) return;
+        if (choice === 'buero') { rec.office = Object.assign({}, rec.office || {}, { shared: true, sharedAt: Date.now() }); }
         rec.status = 'fertig';
         rec.needsRefile = false;
         rec.finishedAt = rec.finishedAt || Date.now();
         await S.Auftraege.save(rec);
         await S.queueFiling(rec);
-        toast(navigator.onLine ? 'Wird in der Kundendatenbank abgelegt…' : 'Gespeichert – wird abgelegt, sobald Internet da ist');
+        toast((navigator.onLine ? 'Wird abgelegt' : 'Gespeichert – wird abgelegt, sobald Internet da ist') + (choice === 'buero' ? ' · Büro wird benachrichtigt' : ''));
         drawStatus();
       };
     }
+
+    // ---- Arbeitszeit ----
+    async function drawZeiten() {
+      var box = $('#zeitRows');
+      if (!box) return;
+      rec.zeiten = rec.zeiten || [];
+      if (!rec.zeiten.length) {
+        var s = await S.Settings.get();
+        var prof = await S.Profile.get();
+        rec.zeiten.push({ datum: (rec.ablage && rec.ablage.datum) || S.isoDate(new Date()), monteur: prof.monteurName || s.deviceName || '', stunden: '' });
+      }
+      box.innerHTML = rec.zeiten.map(function (z, i) {
+        return '<div class="zeit-row"><input type="date" data-z="' + i + '" data-k="datum" value="' + esc(z.datum) + '">' +
+          '<input data-z="' + i + '" data-k="monteur" list="monteure" value="' + esc(z.monteur) + '" placeholder="Monteur" autocomplete="off">' +
+          '<input data-z="' + i + '" data-k="stunden" inputmode="decimal" value="' + esc(z.stunden) + '" placeholder="z. B. 2,5">' +
+          '<button type="button" class="del" data-zdel="' + i + '" aria-label="Zeile löschen">' + ICONS.close + '</button></div>';
+      }).join('');
+      $$('[data-z]', box).forEach(function (el) {
+        el.oninput = function () { rec.zeiten[Number(el.getAttribute('data-z'))][el.getAttribute('data-k')] = el.value; zeitSum(); markChanged(); };
+      });
+      $$('[data-zdel]', box).forEach(function (b) {
+        b.onclick = function () { rec.zeiten.splice(Number(b.getAttribute('data-zdel')), 1); drawZeiten(); markChanged(); };
+      });
+      var names = {};
+      (await S.Auftraege.all()).forEach(function (a) { (a.zeiten || []).forEach(function (z) { if (z.monteur) names[z.monteur] = 1; }); });
+      $('#monteure').innerHTML = Object.keys(names).map(function (n) { return '<option value="' + esc(n) + '">'; }).join('');
+      zeitSum();
+    }
+    function zeitSum() {
+      var el = $('#zeitSum');
+      if (el) el.textContent = window.PdfGen.hasZeiten(rec) ? 'Gesamt: ' + window.PdfGen.sumZeiten(rec) + ' Std.' : '';
+    }
+    $('#addZeit').onclick = function () {
+      var last = rec.zeiten[rec.zeiten.length - 1] || {};
+      rec.zeiten.push({ datum: last.datum || S.isoDate(new Date()), monteur: '', stunden: '' });
+      drawZeiten();
+    };
 
     // ---- Fotos ----
     var photoUrls = [];
@@ -803,10 +957,11 @@
     drawStatus();
     drawPhotos();
     drawSigs();
+    drawZeiten();
     rerenderOn(['outbox', 'sync'], drawStatus);
     rerenderOn(['outbox'], drawPhotos);
     // Änderungen von anderen Geräten übernehmen (nur wenn gerade nicht getippt/unterschrieben wird)
-    function editable(r) { return JSON.stringify([r.f, r.material, r.sig || {}, r.customerId, r.ablage, r.status]); }
+    function editable(r) { return JSON.stringify([r.f, r.material, r.sig || {}, r.customerId, r.ablage, r.status, r.zeiten || []]); }
     rerenderOn(['auftraege'], async function () {
       var fresh = await S.Auftraege.get(rec.id);
       if (!fresh) return;
@@ -818,6 +973,7 @@
       }
       if (fresh.updatedAt > rec.updatedAt) rec.updatedAt = fresh.updatedAt;
       rec.drive = fresh.drive;
+      rec.office = mergeOffice(rec, fresh);
       var photosChanged = JSON.stringify(rec.photos || []) !== JSON.stringify(fresh.photos || []);
       rec.photos = fresh.photos || [];
       if (photosChanged) drawPhotos();
@@ -968,7 +1124,7 @@
   route(/^#\/kunden$/, async function () {
     view.innerHTML =
       '<div class="page-head"><h1>Kundendatenbank</h1>' +
-      '<button class="btn" id="newCustomer">' + ICONS.plus + '<span>Neuer Kunde</span></button>' +
+      '<button class="btn chef-only" id="newCustomer">' + ICONS.plus + '<span>Neuer Kunde</span></button>' +
       '<div class="sub" id="idxInfo"></div><div class="sub" id="offInfo"></div></div>' +
       '<div class="stack"><label class="search">' + ICONS.search + '<input class="input" id="cq" type="search" placeholder="Kunde, Straße, Ort…" value="' + esc(custState.q) + '"></label>' +
       '<div class="chips"><button class="chip" data-s="name">A–Z</button><button class="chip" data-s="recent">Zuletzt geändert</button><button class="chip" data-s="offline">Offline verfügbar</button></div>' +
@@ -1049,6 +1205,7 @@
       }
       var custOffline = customer && off.has(customer.id);
       var allOffline = s.offlineMode === 'alles';
+      var ro = s.role === 'buero';
       if (current !== me) return;
       view.innerHTML =
         '<nav class="breadcrumb"><a href="#/kunden">Kundendatenbank</a>' + crumbs.map(function (c) {
@@ -1056,11 +1213,12 @@
         }).join('') + '</nav>' +
         '<div class="page-head"><h1>' + esc(folder.name.trim()) + '</h1></div>' +
         '<div class="btn-row" style="margin-bottom:14px">' +
-        (customer ? '<a class="btn primary" href="#/auftrag/neu?kunde=' + encodeURIComponent(customer.id) + '">' + ICONS.plus + '<span>Arbeitsauftrag</span></a>' : '') +
-        '<label class="btn">' + ICONS.camera + '<span>Foto aufnehmen</span><input type="file" accept="image/*" capture="environment" id="cam" hidden></label>' +
+        (customer && !ro ? '<a class="btn primary" href="#/auftrag/neu?kunde=' + encodeURIComponent(customer.id) + '">' + ICONS.plus + '<span>Arbeitsauftrag</span></a>' : '') +
+        (customer ? '<a class="btn" href="#/termine/neu?kunde=' + encodeURIComponent(customer.id) + '">' + ICONS.plus + '<span>Termin</span></a>' : '') +
+        (ro ? '' : '<label class="btn">' + ICONS.camera + '<span>Foto aufnehmen</span><input type="file" accept="image/*" capture="environment" id="cam" hidden></label>' +
         '<label class="btn">' + ICONS.upload + '<span>Hochladen</span><input type="file" id="upl" multiple hidden></label>' +
-        '<button class="btn" id="mkdir">Neuer Ordner</button>' +
-        (customer && !allOffline ? '<button class="btn' + (custOffline ? ' primary' : '') + '" id="offTog">' + (custOffline ? '✓ Offline verfügbar' : 'Offline verfügbar machen') + '</button>' : '') +
+        '<button class="btn" id="mkdir">Neuer Ordner</button>') +
+        (customer && !allOffline && !ro ? '<button class="btn' + (custOffline ? ' primary' : '') + '" id="offTog">' + (custOffline ? '✓ Offline verfügbar' : 'Offline verfügbar machen') + '</button>' : '') +
         (folder.local ? '' : '<a class="btn ghost" target="_blank" rel="noopener" href="https://drive.google.com/drive/folders/' + esc(folder.id) + '">In Drive öffnen</a>') +
         '</div>' +
         (auftraege.length ? '<h2>Arbeitsaufträge aus der App</h2><div class="list">' + auftraege.map(function (a) {
@@ -1090,9 +1248,10 @@
         toast((files.length === 1 ? (camera ? 'Foto' : '1 Datei') : files.length + ' Dateien') + (navigator.onLine ? ' wird hochgeladen' : ' gespeichert – Upload, sobald Internet da ist'));
         draw();
       }
+      showThumbs(folderId);
+      if (ro) return;
       $('#cam').onchange = function () { up(this.files, true); this.value = ''; };
       $('#upl').onchange = function () { up(this.files, false); this.value = ''; };
-      showThumbs(folderId);
       $('#mkdir').onclick = function () {
         var sheet = openModal('<div class="sheet-head"><h3>Neuer Ordner</h3><button class="btn small ghost" data-close>' + ICONS.close + '</button></div>' +
           '<div class="sheet-body stack"><label class="field"><span>Name</span><input id="fdName" autocomplete="off"></label>' +
@@ -1197,6 +1356,8 @@
         }).join('') || '<div class="empty">Nichts offen – alles ist synchron.</div>') + '</div>' +
         '<h2>Offline-Daten</h2><div class="card pad stack" id="offBox"></div>' +
         '<h2>Fotos &amp; Unterschrift</h2><div class="card pad stack" id="prefBox"></div>' +
+        '<h2>Benachrichtigungen</h2><div class="card pad stack" id="pushBox"></div>' +
+        '<h2>Büro-Zugang</h2><div class="card pad stack" id="bueroBox"></div>' +
         '<h2>Gerät</h2>' +
         '<div class="btn-row">' +
         '<button class="btn" id="fullIndex">Kundendatenbank komplett neu laden</button>' +
@@ -1210,6 +1371,8 @@
       $('#fullIndex').onclick = function () { S.Sync.run({ fullIndex: true }); toast('Kundendatenbank wird neu geladen…'); };
       drawOffline(offNames);
       drawPrefs();
+      renderPushBox($('#pushBox'));
+      drawBueroBox();
       $$('[data-drop]').forEach(function (b) {
         b.onclick = async function () {
           var ok = await confirmBox('Eintrag verwerfen?', 'Dieser Schritt wird nicht mehr zum Server übertragen.', 'Verwerfen', true);
@@ -1296,6 +1459,32 @@
         draw();
       };
     }
+    // ---- Büro-Zugang (Schlüssel für die Mitarbeiter) ----
+    async function drawBueroBox() {
+      var box = $('#bueroBox');
+      if (!box) return;
+      box.innerHTML = '<div class="small">Die Mitarbeiter im Büro nutzen dieselbe App-Adresse, aber mit eigenem <b>Büro-Schlüssel</b>. Sie sehen nur die Aufträge, die du ans Büro schickst (zum Drucken/Abrechnen), die Termine und die Kundendatenbank (nur lesen). Entwürfe und Einstellungen sehen sie nicht.</div>' +
+        '<div id="okBox" class="small muted">' + (navigator.onLine ? '<span class="spinner"></span>' : 'Schlüssel nur online abrufbar.') + '</div>';
+      if (!navigator.onLine) return;
+      try {
+        var j = await S.api('officeKey', {});
+        var url = location.origin + location.pathname;
+        if (!$('#okBox')) return;
+        $('#okBox').outerHTML = '<dl class="kv"><dt>App-Adresse</dt><dd>' + esc(url) + '</dd><dt>Büro-Schlüssel</dt><dd><b class="key-input">' + esc(j.officeKey) + '</b></dd></dl>' +
+          '<div class="btn-row"><button type="button" class="btn small" id="okCopy">Zugangsdaten kopieren</button><button type="button" class="btn small ghost danger" id="okNew">Neuen Büro-Schlüssel erzeugen</button></div>';
+        $('#okCopy').onclick = async function () {
+          var txt = 'ELUH App (Büro)\nAdresse: ' + url + '\nBüro-Schlüssel: ' + j.officeKey + '\n\nEinrichten: Adresse öffnen, Schlüssel und deinen Namen eingeben. Am iPhone/iPad danach über Teilen → „Zum Home-Bildschirm“ installieren.';
+          try { await navigator.clipboard.writeText(txt); toast('Zugangsdaten kopiert'); } catch (e) { toast('Kopieren nicht möglich – bitte abschreiben', true); }
+        };
+        $('#okNew').onclick = async function () {
+          var ok = await confirmBox('Neuen Büro-Schlüssel erzeugen?', 'Der alte Büro-Schlüssel funktioniert danach nicht mehr – alle Büro-Geräte müssen den neuen eingeben.', 'Neu erzeugen', true);
+          if (!ok) return;
+          await S.api('officeKey', { renew: true });
+          drawBueroBox();
+        };
+      } catch (e) { if ($('#okBox')) $('#okBox').textContent = 'Konnte nicht geladen werden: ' + e.message; }
+    }
+
     // ---- Fotos & Monteur-Unterschrift ----
     async function drawPrefs() {
       var box = $('#prefBox');
@@ -1303,6 +1492,7 @@
       var s = await S.Settings.get();
       var prof = await S.Profile.get();
       box.innerHTML =
+        '<label class="field"><span>Mein Name als Monteur (Stundennachweis)</span><input id="monName" value="' + esc(prof.monteurName || s.deviceName || '') + '" placeholder="z. B. Dominic Pfaue"></label>' +
         '<label class="check"><input type="checkbox" id="phSmall"' + (s.photoOriginal ? '' : ' checked') + '> Fotos vor dem Hochladen verkleinern (empfohlen: ca. 0,5–1 MB statt 3–5 MB, für Doku völlig ausreichend)</label>' +
         '<div><b class="small">Meine Unterschrift (Monteur)</b></div>' +
         (prof.monteurSig ? '<img class="sig-img" alt="Gespeicherte Unterschrift" src="' + prof.monteurSig + '">' : '<div class="small muted">Noch keine gespeichert.</div>') +
@@ -1310,6 +1500,7 @@
         '<div class="btn-row"><button type="button" class="btn" id="mySig">' + ICONS.pen + '<span>' + (prof.monteurSig ? 'Neu unterschreiben' : 'Unterschrift hinterlegen') + '</span></button>' +
         (prof.monteurSig ? '<button type="button" class="btn ghost danger" id="mySigDel">Entfernen</button>' : '') + '</div>';
       $('#phSmall', box).onchange = function () { S.Settings.set({ photoOriginal: !this.checked }); };
+      $('#monName', box).onchange = function () { S.Profile.set({ monteurName: this.value.trim() }); toast('Gespeichert'); };
       $('#autoSig', box).onchange = function () { S.Profile.set({ autoMonteur: this.checked }); };
       $('#mySig', box).onclick = async function () {
         var r = await openSignaturePad('Meine Unterschrift (Monteur)', false);
@@ -1375,7 +1566,22 @@
   document.addEventListener('visibilitychange', function () { if (!document.hidden) S.Sync.schedule(300); });
 
   renderSyncPill();
-  router().then(function () { S.Sync.run(); });
+  document.addEventListener('DOMContentLoaded', async function () {
+    await router();
+    var s = await S.Settings.get();
+    if (s.key && navigator.onLine && (!s.role || !s.vapidKey)) {
+      try { await S.refreshPing(); S.Push.register().catch(function () {}); router(); } catch (e) { /* später */ }
+    }
+    S.Sync.run();
+  });
 
   window.ELUH_APP = { router: router, toast: toast };
+  // Hilfsfunktionen für die Zusatzmodule (Büro, Termine)
+  window.UI = {
+    route: route, view: view, esc: esc, $: $, $$: $$, toast: toast, openModal: openModal, closeModal: closeModal,
+    confirmBox: confirmBox, choiceBox: choiceBox, ICONS: ICONS, fmtDate: fmtDate, fmtDT: fmtDT, fmtTime: fmtTime, isoToDe: isoToDe,
+    debounce: debounce, matchQuery: matchQuery, auftragTitle: auftragTitle, auftragDate: auftragDate, officeStatus: officeStatus,
+    showAuftragPdf: showAuftragPdf, openCustomerPicker: openCustomerPicker, parseCustomer: parseCustomer, rerenderOn: rerenderOn,
+    onCleanup: onCleanup, current: function () { return current; }, renderPushBox: renderPushBox, isIOS: isIOS, fileIcon: fileIcon
+  };
 })();

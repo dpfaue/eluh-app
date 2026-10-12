@@ -9,7 +9,7 @@
   function openDb() {
     if (dbPromise) return dbPromise;
     dbPromise = new Promise(function (resolve, reject) {
-      var req = indexedDB.open('eluh-app', 2);
+      var req = indexedDB.open('eluh-app', 3);
       req.onupgradeneeded = function () {
         var d = req.result;
         if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv');
@@ -17,6 +17,7 @@
         if (!d.objectStoreNames.contains('files')) d.createObjectStore('files', { keyPath: 'id' });
         if (!d.objectStoreNames.contains('outbox')) d.createObjectStore('outbox', { keyPath: 'id' });
         if (!d.objectStoreNames.contains('thumbs')) d.createObjectStore('thumbs', { keyPath: 'id' });
+        if (!d.objectStoreNames.contains('termine')) d.createObjectStore('termine', { keyPath: 'id' });
       };
       req.onsuccess = function () { resolve(req.result); };
       req.onerror = function () { reject(req.error); };
@@ -81,7 +82,11 @@
   // Einstellungen
   // ------------------------------------------------------------------
   var Settings = {
-    get: async function () { return (await DB.get('kv', 'settings')) || {}; },
+    get: async function () {
+      var s = (await DB.get('kv', 'settings')) || {};
+      if (!s.deviceId) { s.deviceId = uid('dev-'); await DB.put('kv', s, 'settings'); }
+      return s;
+    },
     set: async function (patch) {
       var s = Object.assign(await Settings.get(), patch);
       await DB.put('kv', s, 'settings');
@@ -580,11 +585,13 @@
         name: window.PdfGen.fileName(rec),
         data: b64,
         replaceId: rec.drive && rec.drive.fileId || null,
+        extra: window.PdfGen.hasZeiten(rec) ? { name: window.PdfGen.stundenName(rec), data: await blobToBase64(new Blob([await window.PdfGen.buildStunden(rec)], { type: 'application/pdf' })) } : null,
+        extraReplaceId: rec.drive && rec.drive.extraFileId || null,
         photoIds: (rec.photos || []).filter(function (x) { return x.fileId; }).map(function (x) { return x.fileId; })
       }, { timeout: 180000 });
       var fresh = await Auftraege.get(rec.id);
       fresh.customerId = cust || null;
-      fresh.drive = { fileId: r4.fileId, folderId: r4.folderId, path: r4.path, url: r4.url, filedAt: Date.now(), filedVersion: rec.updatedAt };
+      fresh.drive = { fileId: r4.fileId, folderId: r4.folderId, path: r4.path, url: r4.url, filedAt: Date.now(), filedVersion: rec.updatedAt, extraFileId: r4.extraFileId || null };
       if (fresh.updatedAt === rec.updatedAt) fresh.needsRefile = false;
       (fresh.photos || []).forEach(function (x) { if (x.fileId && (r4.moved || []).indexOf(x.fileId) >= 0) x.path = r4.path; });
       await Auftraege.save(fresh);
@@ -641,10 +648,18 @@
       Sync.state.error = null;
       emit('sync', Sync.state);
       try {
-        Sync.state.phase = 'Warteschlange';
-        await processOutbox();
-        Sync.state.phase = 'Aufträge';
-        var iv = await syncAuftraege();
+        var iv = null;
+        if (s.role === 'buero') {
+          Sync.state.phase = 'Aufträge';
+          await syncOffice();
+        } else {
+          Sync.state.phase = 'Warteschlange';
+          await processOutbox();
+          Sync.state.phase = 'Aufträge';
+          iv = await syncAuftraege();
+        }
+        Sync.state.phase = 'Termine';
+        await syncTermine();
         Sync.state.phase = 'Kundendatenbank';
         await syncIndex(opts.forceIndex, opts.fullIndex, iv);
         Sync.state.lastOk = Date.now();
@@ -753,6 +768,129 @@
     return pdfjsReady;
   }
 
+  // ------------------------------------------------------------------
+  // Termine (Chef + Büro, synchronisiert über termine.json)
+  // ------------------------------------------------------------------
+  var Termine = {
+    all: async function () { return (await DB.all('termine')).filter(function (t) { return !t.deleted; }); },
+    get: function (id) { return DB.get('termine', id); },
+    save: async function (t) {
+      t.updatedAt = Math.max(Date.now(), (t.updatedAt || 0) + 1);
+      t._dirty = true;
+      await DB.put('termine', t);
+      emit('termine');
+      Sync.schedule(800);
+      return t;
+    },
+    remove: async function (t) { t.deleted = true; return Termine.save(t); },
+    create: async function (preset) {
+      var s = await Settings.get();
+      return Object.assign({ id: uid('t-'), title: '', date: isoDate(new Date()), time: '', end: '', allDay: false, person: '', note: '', remind: [60], createdBy: s.deviceName || (s.role === 'buero' ? 'Büro' : 'Chef'), createdAt: Date.now() }, preset || {});
+    }
+  };
+
+  async function syncTermine() {
+    var s = await Settings.get();
+    var list = await DB.all('termine');
+    var sent = {};
+    var changes = list.filter(function (t) { return t._dirty; }).map(function (t) {
+      sent[t.id] = t.updatedAt;
+      var c = {};
+      Object.keys(t).forEach(function (k) { if (k.charAt(0) !== '_') c[k] = t[k]; });
+      return c;
+    });
+    var seq = (await DB.get('kv', 'termineSeq')) || 0;
+    var j = await api('termine', { changes: changes, since: seq, deviceId: s.deviceId });
+    var changed = false;
+    for (var i = 0; i < j.records.length; i++) {
+      var r = j.records[i];
+      var local = await DB.get('termine', r.id);
+      if (!local || !local._dirty || Number(r.updatedAt) >= Number(local.updatedAt)) { await DB.put('termine', r); changed = true; }
+    }
+    for (var id in sent) {
+      var cur = await DB.get('termine', id);
+      if (cur && cur._dirty && cur.updatedAt === sent[id]) { delete cur._dirty; await DB.put('termine', cur); changed = true; }
+    }
+    await DB.put('kv', j.seq, 'termineSeq');
+    if (changed) emit('termine');
+  }
+
+  // ------------------------------------------------------------------
+  // Büro: freigegebene Aufträge
+  // ------------------------------------------------------------------
+  var Office = {
+    list: async function () { return (await DB.get('kv', 'officeList')) || []; },
+    mark: async function (id, field, value) {
+      var s = await Settings.get();
+      var j = await api('officeMark', { id: id, field: field, value: value, by: s.deviceName || 'Büro' });
+      var list = await Office.list();
+      list.forEach(function (r) { if (r.id === id) r.office = j.office; });
+      await DB.put('kv', list, 'officeList');
+      emit('office');
+      return j.office;
+    }
+  };
+  async function syncOffice() {
+    var j = await api('officeList', {});
+    var old = JSON.stringify(await Office.list());
+    await DB.put('kv', j.records, 'officeList');
+    if (old !== JSON.stringify(j.records)) emit('office');
+  }
+
+  // ------------------------------------------------------------------
+  // Push-Benachrichtigungen
+  // ------------------------------------------------------------------
+  function b64ToBytes(b64url) {
+    var b = (b64url + '==='.slice((b64url.length + 3) % 4)).replace(/-/g, '+').replace(/_/g, '/');
+    var raw = atob(b);
+    var out = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+  var Push = {
+    supported: function () { return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window; },
+    standalone: function () { return window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; },
+    status: async function () {
+      if (!Push.supported()) return 'unsupported';
+      if (Notification.permission === 'denied') return 'denied';
+      try {
+        var reg = await navigator.serviceWorker.getRegistration();
+        var sub = reg && await reg.pushManager.getSubscription();
+        return sub && Notification.permission === 'granted' ? 'on' : 'off';
+      } catch (e) { return 'off'; }
+    },
+    enable: async function () {
+      var s = await Settings.get();
+      if (!s.vapidKey) await refreshPing();
+      s = await Settings.get();
+      var perm = await Notification.requestPermission();
+      if (perm !== 'granted') throw new Error('Mitteilungen wurden nicht erlaubt');
+      var reg = await navigator.serviceWorker.ready;
+      var sub = await reg.pushManager.getSubscription();
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(s.vapidKey) });
+      await api('pushSubscribe', { deviceId: s.deviceId, name: s.deviceName || '', subscription: sub.toJSON() });
+      return true;
+    },
+    disable: async function () {
+      var s = await Settings.get();
+      try { var reg = await navigator.serviceWorker.getRegistration(); var sub = reg && await reg.pushManager.getSubscription(); if (sub) await sub.unsubscribe(); } catch (e) { /* */ }
+      await api('pushSubscribe', { deviceId: s.deviceId, name: s.deviceName || '', subscription: null });
+    },
+    test: async function () { var s = await Settings.get(); return api('pushTest', { deviceId: s.deviceId }); },
+    register: async function () {
+      // Gerät (Name/Rolle) auch ohne Push bekannt machen, damit Erinnerungen zugeordnet werden können
+      var s = await Settings.get();
+      return api('pushSubscribe', { deviceId: s.deviceId, name: s.deviceName || '' });
+    }
+  };
+
+  /** Rolle, Push-Schlüssel und Kalender-Link vom Server holen */
+  async function refreshPing() {
+    var j = await api('ping', {});
+    await Settings.set({ role: j.role, vapidKey: j.vapidKey, icsToken: j.ics });
+    return j;
+  }
+
   window.addEventListener('online', function () { Sync.state.offline = false; Sync.schedule(200); });
   window.addEventListener('offline', function () { Sync.state.offline = true; emit('sync', Sync.state); });
 
@@ -762,6 +900,7 @@
     createCustomer: createCustomer, createFolder: createFolder, uploadFile: uploadFile, queueFiling: queueFiling,
     addAuftragPhoto: addAuftragPhoto, removeAuftragPhoto: removeAuftragPhoto, Profile: Profile, Thumbs: Thumbs,
     loadPdfJs: loadPdfJs, shrinkImage: shrinkImage,
+    Termine: Termine, Office: Office, Push: Push, refreshPing: refreshPing,
     on: Sync.on, emit: emit, uid: uid, isoDate: isoDate, base64ToBlob: base64ToBlob, blobToBase64: blobToBase64
   };
 })();

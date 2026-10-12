@@ -21,9 +21,12 @@
       <span class="brand-text">Kundendienst</span>
     </a>
     <nav class="tabs" aria-label="Hauptbereiche">
-      <a href="#/auftraege" data-tab="auftraege">Aufträge</a>
+      <a href="#/auftraege" data-tab="auftraege" class="chef-only">Aufträge</a>
+      <a href="#/buero" data-tab="buero" class="buero-only">Aufträge</a>
+      <a href="#/termine" data-tab="termine">Termine</a>
       <a href="#/kunden" data-tab="kunden">Kunden</a>
-      <a href="#/sync" data-tab="sync">Sync</a>
+      <a href="#/sync" data-tab="sync" class="chef-only">Sync</a>
+      <a href="#/konto" data-tab="konto" class="buero-only">Konto</a>
     </nav>
     <button class="sync-pill" id="syncPill" type="button" aria-live="polite">…</button>
   </header>
@@ -31,18 +34,12 @@
   <main id="view" tabindex="-1"></main>
 
   <nav class="bottombar" aria-label="Hauptbereiche">
-    <a href="#/auftraege" data-tab="auftraege">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l5 5v13H7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v5h5M10 13h6M10 17h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-      <span>Aufträge</span>
-    </a>
-    <a href="#/kunden" data-tab="kunden">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2h8.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
-      <span>Kunden</span>
-    </a>
-    <a href="#/sync" data-tab="sync">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8M4 4v4h4M4 13a8 8 0 0 0 14.3 4.9L20 16m0 4v-4h-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      <span>Sync</span>
-    </a>
+    <a href="#/auftraege" data-tab="auftraege" class="chef-only"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l5 5v13H7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v5h5M10 13h6M10 17h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>Aufträge</span></a>
+    <a href="#/buero" data-tab="buero" class="buero-only"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l5 5v13H7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v5h5M10 13h6M10 17h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>Aufträge</span></a>
+    <a href="#/termine" data-tab="termine"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 10h17M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>Termine</span></a>
+    <a href="#/kunden" data-tab="kunden"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2h8.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Kunden</span></a>
+    <a href="#/sync" data-tab="sync" class="chef-only"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8M4 4v4h4M4 13a8 8 0 0 0 14.3 4.9L20 16m0 4v-4h-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Sync</span></a>
+    <a href="#/konto" data-tab="konto" class="buero-only"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8.5" r="3.6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5 20c1.2-3.6 4-5.3 7-5.3s5.8 1.7 7 5.3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>Konto</span></a>
   </nav>
 
   <div id="toasts" aria-live="polite"></div>
@@ -58,5 +55,7 @@
   <script src="pdfgen.js"></script>
   <script src="offline.js"></script>
   <script src="app.js"></script>
+  <script src="termine.js"></script>
+  <script src="buero.js"></script>
 </body>
 </html>

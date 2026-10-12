@@ -95,7 +95,7 @@ button { cursor: pointer; }
 /* ---------- Untere Navigation (Handy) ---------- */
 .bottombar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
-  display: grid; grid-template-columns: repeat(3, 1fr);
+  display: grid; grid-template-columns: repeat(4, 1fr);
   padding: 6px 8px calc(6px + var(--safe-b));
   background: color-mix(in srgb, var(--surface) 94%, transparent);
   backdrop-filter: saturate(1.4) blur(12px);
@@ -302,3 +302,21 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: v
 .seg button.on { background: var(--ink); color: var(--surface); }
 .progress { height: 10px; border-radius: 999px; background: var(--surface-2); overflow: hidden; margin-bottom: 6px; }
 .progress span { display: block; height: 100%; background: var(--red); transition: width .3s; }
+
+/* ---------- v2.2: Rollen, Büro, Arbeitszeit, Termine ---------- */
+body:not(.role-buero) .buero-only { display: none !important; }
+body.role-buero .chef-only { display: none !important; }
+.badges { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: none; }
+.zeit-row { display: grid; grid-template-columns: 150px 1fr 110px 36px; gap: 6px; align-items: center; padding: 4px 0; }
+.zeit-head { font-size: 12px; font-weight: 700; color: var(--ink-3); }
+.zeit-row input { width: 100%; border: 1px solid var(--line-strong); background: var(--surface); border-radius: 7px; padding: 8px; font-size: 15px; min-height: 40px; }
+.zeit-row .del { border: 0; background: none; color: var(--ink-3); height: 40px; }
+@media (max-width: 520px) { .zeit-row { grid-template-columns: 1fr 1fr 32px; } .zeit-row input[data-k=monteur] { grid-column: 1 / 3; grid-row: 2; } .zeit-head { display: none; } .zeit-row .del { grid-row: 1 / 3; grid-column: 3; } }
+.day-head { font-size: 13px; font-weight: 800; color: var(--ink-2); margin: 18px 2px 6px; text-transform: none; letter-spacing: 0; }
+.day-head.today { color: var(--red); }
+.t-time { font-family: var(--mono); font-size: 14px; font-weight: 700; width: 56px; flex: none; color: var(--ink); }
+.t-time small { display: block; font-weight: 500; color: var(--ink-3); font-size: 12px; }
+.big-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.big-actions .btn { min-height: 54px; font-size: 16px; }
+.office-row .main { cursor: pointer; }
+.hint-card { background: var(--info-soft); color: var(--info); border-radius: 12px; padding: 12px 14px; font-size: 14.5px; }
