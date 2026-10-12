@@ -125,6 +125,21 @@
     t.customerName = c.name;
     t.address = p.address;
     if (!t.title) t.title = p.name;
+    else if (QUICK.indexOf(String(t.title).trim()) >= 0 && p.name) t.title = String(t.title).trim() + ' – ' + p.name;
+  }
+
+  // Schnellwahl für die Art des Termins
+  var QUICK = ['Wartung', 'Störung', 'Reparatur'];
+  function quickOf(title) {
+    var s = String(title || '').trim();
+    for (var i = 0; i < QUICK.length; i++) if (s === QUICK[i] || s.indexOf(QUICK[i] + ' ') === 0) return QUICK[i];
+    return '';
+  }
+  function setQuick(title, q) {
+    var s = String(title || '').trim(), cur = quickOf(s);
+    var rest = cur ? s.slice(cur.length).replace(/^\s*[–-]?\s*/, '') : s;
+    if (cur === q) return rest;              // gleiche Taste nochmal = abwählen
+    return q + (rest ? ' – ' + rest : '');
   }
 
   async function editor(t, isNew) {
@@ -140,6 +155,9 @@
       '<div class="page-head"><a class="btn ghost small" href="#/termine">‹ Termine</a><h1>' + (isNew ? 'Neuer Termin' : esc(t.title || 'Termin')) + '</h1></div>' +
       '<div class="card"><section class="form-section stack">' +
       field('title', 'Was? (z. B. Wartung Gastherme)') +
+      '<div class="chips" id="quickChips" style="margin-top:-4px">' + QUICK.map(function (q) {
+        return '<button type="button" class="chip' + (quickOf(t.title) === q ? ' on' : '') + '" data-quick="' + q + '">' + q + '</button>';
+      }).join('') + '</div>' +
       '<div id="tcust"></div>' +
       field('address', 'Adresse / Ort') +
       '<div class="grid2">' + field('date', 'Datum', 'date') +
@@ -171,6 +189,7 @@
           U.openCustomerPicker(function (c) {
             applyCustomer(t, c);
             $$('[data-t]').forEach(function (el) { el.value = t[el.getAttribute('data-t')] || ''; });
+            drawQuick();
             drawCust();
           });
           if (isBuero) setTimeout(function () { var d = $('#newCust'); if (d) d.remove(); }, 20);
@@ -178,7 +197,15 @@
       }
     }
     function syncTime() { $('#timeRow').style.display = $('#allDay').checked ? 'none' : ''; }
-    $$('[data-t]').forEach(function (el) { el.oninput = function () { t[el.getAttribute('data-t')] = el.value; }; });
+    function drawQuick() { var q = quickOf(t.title); $$('[data-quick]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-quick') === q); }); }
+    $$('[data-t]').forEach(function (el) { el.oninput = function () { t[el.getAttribute('data-t')] = el.value; if (el.getAttribute('data-t') === 'title') drawQuick(); }; });
+    $$('[data-quick]').forEach(function (b) {
+      b.onclick = function () {
+        t.title = setQuick(t.title, b.getAttribute('data-quick'));
+        var inp = $('[data-t="title"]'); if (inp) inp.value = t.title;
+        drawQuick();
+      };
+    });
     $('#allDay').onchange = function () { t.allDay = this.checked; syncTime(); };
     $$('[data-rem]').forEach(function (b) {
       b.onclick = function () {
