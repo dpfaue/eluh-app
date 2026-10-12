@@ -150,13 +150,13 @@
     var s = await S.Settings.get();
     U.view.innerHTML =
       '<div class="page-head"><h1>Konto</h1></div>' +
-      '<div class="card pad"><dl class="kv"><dt>Zugang</dt><dd>Büro</dd><dt>Gerät</dt><dd>' + esc(s.deviceName || '–') + '</dd>' +
+      '<div class="card pad"><dl class="kv"><dt>Zugang</dt><dd>Büro</dd><dt>Gerät</dt><dd>' + esc((s.deviceName || '–') + ' · ' + S.deviceLabel()) + '</dd>' +
       '<dt>Letzter Abgleich</dt><dd>' + U.fmtDT(s.lastSync) + '</dd><dt>App-Version</dt><dd>' + esc(window.ELUH_CONFIG.APP_VERSION) + '</dd></dl></div>' +
       '<h2>Mitteilungen</h2><div class="card pad stack" id="pushBox"></div>' +
       '<h2>App installieren</h2><div class="card pad small stack">' +
       '<div><b>iPhone / iPad:</b> In Safari öffnen → Teilen-Symbol → „Zum Home-Bildschirm“. Danach über das Symbol starten.</div>' +
       '<div><b>PC / Mac:</b> In Chrome oder Edge auf das Installieren-Symbol in der Adressleiste klicken (oder einfach als Lesezeichen speichern).</div></div>' +
-      '<div class="btn-row" style="margin-top:16px"><button class="btn" id="kSync">Jetzt aktualisieren</button><a class="btn ghost" href="#/setup">Anderen Schlüssel eingeben</a></div>';
+      '<div class="btn-row" style="margin-top:16px"><button class="btn" id="kSync">Jetzt aktualisieren</button><a class="btn ghost" href="#/setup">Neu verbinden</a></div>';
     U.renderPushBox($('#pushBox'));
     $('#kSync').onclick = function () { S.Sync.run(); U.toast('Wird aktualisiert…'); };
   }, 'konto');

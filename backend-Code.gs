@@ -18,7 +18,7 @@
 
 var ROOT_ID_DEFAULT = '1lymePWA_YSkx8msRpU25hVrBDAhB4Qsd'; // Ordner "Kundendatenbank"
 var DATA_FOLDER_NAME = 'ELUH-App Daten';
-var BACKEND_VERSION = '1.2.0';
+var BACKEND_VERSION = '1.3.0';
 var TZ = 'Europe/Berlin';
 var CACHE_FOLDER_NAME = 'Offline-Kopien';
 var MAX_BATCH_CHARS = 22 * 1024 * 1024;
@@ -99,13 +99,31 @@ function doPost(e) {
   } catch (err) {
     return json_({ ok: false, error: 'Ungültige Anfrage' });
   }
-  var role = roleForKey_(req.key);
-  if (!role) {
-    Utilities.sleep(800);
-    return json_({ ok: false, error: 'auth' });
+  // Gerät koppeln: geht ohne Schlüssel, nur mit einmaligem Kopplungscode vom Master-Gerät
+  if (req.action === 'pairCheck' || req.action === 'pairFinish') {
+    try {
+      var po = req.action === 'pairCheck' ? apiPairCheck_(req) : apiPairFinish_(req);
+      po.ok = true;
+      return json_(po);
+    } catch (err) {
+      Utilities.sleep(800);
+      return json_({ ok: false, error: String(err && err.message || err) });
+    }
   }
+  var auth = authForKey_(req.key);
+  if (!auth || auth.revoked) {
+    Utilities.sleep(800);
+    return json_({ ok: false, error: auth && auth.revoked ? 'revoked' : 'auth' });
+  }
+  var role = auth.role;
   if (role === 'buero' && !OFFICE_ACTIONS[req.action]) return json_({ ok: false, error: 'Keine Berechtigung' });
+  if (MASTER_ACTIONS[req.action] && !auth.master && !(req.action === 'officeKey' && !hasMaster_() && role === 'chef')) {
+    return json_({ ok: false, error: 'Nur am Master-Gerät möglich' });
+  }
   req.role = role;
+  req.auth = auth;
+  if (auth.client) req.deviceId = auth.client; // gekoppelte Geräte: Geräte-ID ist an den Schlüssel gebunden
+  if (auth.id) touchDevice_(auth.id);
   try {
     var out = route_(req);
     out.ok = true;
@@ -117,13 +135,26 @@ function doPost(e) {
 
 var WRITE_ACTIONS = { upload: 1, createCustomer: 1, createFolder: 1, fileAuftrag: 1, uploadToPath: 1 };
 // Was der Büro-Zugang darf (nur lesen, freigegebene Aufträge, Termine, Benachrichtigungen)
+// Nur das Master-Gerät (Dominics Handy): Geräte koppeln/entfernen, Master übertragen
+var MASTER_ACTIONS = { pairStart: 1, devices: 1, deviceRemove: 1, legacyOff: 1, officeKey: 1 };
 var OFFICE_ACTIONS = { ping: 1, index: 1, getFile: 1, getFiles: 1, thumbs: 1, officeList: 1, officeMark: 1, termine: 1, pushSubscribe: 1, notifications: 1, pushTest: 1 };
 
 function route_(req) {
   if (WRITE_ACTIONS[req.action]) props_().setProperty('LAST_REFRESH', '0');
   switch (req.action) {
     case 'ping':
-      return { now: Date.now(), version: BACKEND_VERSION, root: rootId_(), role: req.role, vapidKey: vapidKeys_().pub, ics: props_().getProperty('ICS_TOKEN') || null };
+      return { now: Date.now(), version: BACKEND_VERSION, root: rootId_(), role: req.role, vapidKey: vapidKeys_().pub, ics: props_().getProperty('ICS_TOKEN') || null,
+        master: !!req.auth.master, device: req.auth.id || null, legacy: !req.auth.id, hasMaster: hasMaster_() };
+    case 'becomeMaster':
+      return apiBecomeMaster_(req);
+    case 'pairStart':
+      return apiPairStart_(req);
+    case 'devices':
+      return apiDevices_(req);
+    case 'deviceRemove':
+      return apiDeviceRemove_(req);
+    case 'legacyOff':
+      return apiLegacyOff_(req);
     case 'officeKey':
       return apiOfficeKey_(req);
     case 'officeList':
@@ -335,20 +366,247 @@ function apiFileAuftrag_(req) {
 
 
 // ============================================================
-// Rollen: Chef (voller Zugriff) und Büro (eingeschränkt)  – ab 1.2
+// Rollen: Dominic (voller Zugriff) und Büro (eingeschränkt)  – ab 1.2
 // ============================================================
 
 function roleForKey_(k) {
+  var a = authForKey_(k);
+  return a && !a.revoked ? a.role : null;
+}
+
+// ============================================================
+// Geräte & Master-Gerät (ab 1.3)
+// Jedes gekoppelte Gerät hat einen eigenen langen Schlüssel (nur als Hash gespeichert).
+// Das Master-Gerät (Dominics Handy, 48 Zeichen) koppelt neue Geräte per QR-Code/Kopplungscode,
+// sieht alle Geräte und kann sie entfernen. Entfernte Geräte löschen beim nächsten Kontakt ihre Daten.
+// Alte Schlüssel (APP_KEY / OFFICE_KEY) funktionieren bis zur Umstellung weiter.
+// ============================================================
+
+var MASTER_KEY_LEN = 48, DEVICE_KEY_LEN = 32, PAIR_CODE_LEN = 12, PAIR_TTL_MS = 15 * 60 * 1000;
+
+/** Prüft einen Schlüssel → { role, master, id, client } oder { revoked: true } oder null */
+function authForKey_(k) {
   var n = normKey_(k);
   if (!n) return null;
+  var h = hashKey_(n);
+  var devs = devices_();
+  for (var id in devs) {
+    if (devs[id].hash === h) return { role: devs[id].role, master: !!devs[id].master, id: id, client: devs[id].client || null, name: devs[id].name };
+  }
   var chef = props_().getProperty('APP_KEY');
-  if (chef && n === normKey_(chef)) return 'chef';
+  if (chef && n === normKey_(chef)) return { role: 'chef', master: false, id: null };
   var office = props_().getProperty('OFFICE_KEY');
-  if (office && n === normKey_(office)) return 'buero';
+  if (office && n === normKey_(office)) return { role: 'buero', master: false, id: null };
+  var rev = readPropJson_('REVOKED', {});
+  if (rev[h]) return { revoked: true };
   return null;
 }
 
-/** Büro-Schlüssel anzeigen oder neu erzeugen (nur Chef) */
+function hashKey_(n) {
+  var b = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, 'eluh|' + n);
+  return b.map(function (x) { return ('0' + ((x + 256) % 256).toString(16)).slice(-2); }).join('');
+}
+
+/** Zufallsschlüssel mit n Zeichen (32er-Alphabet → 5 Bit je Zeichen), in Vierergruppen */
+function makeLongKey_(len) {
+  var alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  var s = '';
+  while (s.length < len) {
+    var bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, Utilities.getUuid() + Utilities.getUuid() + Math.random() + Date.now());
+    for (var i = 0; i < bytes.length && s.length < len; i++) s += alphabet.charAt((bytes[i] + 256) % 32);
+  }
+  return s.match(/.{4}/g).join('-');
+}
+
+function readPropJson_(name, dflt) {
+  var t = props_().getProperty(name);
+  if (!t) return dflt;
+  try { return JSON.parse(t); } catch (e) { return dflt; }
+}
+function devices_() { return readPropJson_('DEVICES', {}); }
+function saveDevices_(d) { props_().setProperty('DEVICES', JSON.stringify(d)); }
+function hasMaster_() {
+  var d = devices_();
+  return Object.keys(d).some(function (id) { return d[id].master; });
+}
+function masterClients_() {
+  var d = devices_();
+  return Object.keys(d).filter(function (id) { return d[id].master && d[id].client; }).map(function (id) { return d[id].client; });
+}
+
+/** "zuletzt gesehen" höchstens stündlich schreiben (eigene Eigenschaft, damit nichts überschrieben wird) */
+function touchDevice_(id) {
+  var p = props_(), k = 'SEEN_' + id;
+  var last = Number(p.getProperty(k) || 0);
+  if (Date.now() - last > 60 * 60 * 1000) p.setProperty(k, String(Date.now()));
+}
+
+function newDevice_(devs, role, master, name, label, client) {
+  var key = makeLongKey_(master ? MASTER_KEY_LEN : DEVICE_KEY_LEN);
+  var id = 'g' + Utilities.getUuid().replace(/-/g, '').slice(0, 10);
+  devs[id] = { role: role, master: !!master, name: String(name || '').slice(0, 40), label: String(label || '').slice(0, 40),
+    client: client ? String(client).slice(0, 60) : null, hash: hashKey_(normKey_(key)), created: Date.now() };
+  props_().setProperty('SEEN_' + id, String(Date.now()));
+  return { id: id, key: key };
+}
+
+/** Erstes Master-Gerät festlegen (nur mit Dominics bisherigem Schlüssel, nur solange es keinen Master gibt).
+ *  Danach gilt der alte App-Schlüssel nicht mehr – Dominics andere Geräte werden per QR-Code neu gekoppelt. */
+function apiBecomeMaster_(req) {
+  if (req.role !== 'chef' || req.auth.id) throw new Error('Nur mit dem bisherigen App-Schlüssel möglich');
+  return withLock_(function () {
+    var devs = devices_();
+    if (Object.keys(devs).some(function (id) { return devs[id].master; })) throw new Error('Es gibt schon ein Master-Gerät');
+    var nd = newDevice_(devs, 'chef', true, req.name || 'Dominic', req.label, req.deviceId);
+    saveDevices_(devs);
+    props_().deleteProperty('APP_KEY');
+    return { key: nd.key, device: nd.id, master: true };
+  });
+}
+
+/** Kopplungscode erzeugen (15 Min. gültig, einmalig). master=true → überträgt den Master auf das neue Gerät */
+function apiPairStart_(req) {
+  return withLock_(function () {
+    var pairs = cleanPairs_(readPropJson_('PAIRS', {}));
+    var code = makeLongKey_(PAIR_CODE_LEN);
+    pairs[normKey_(code)] = { exp: Date.now() + PAIR_TTL_MS, master: !!req.master, by: req.auth.id };
+    props_().setProperty('PAIRS', JSON.stringify(pairs));
+    return { code: code, exp: pairs[normKey_(code)].exp, master: !!req.master };
+  });
+}
+
+function cleanPairs_(pairs) {
+  var now = Date.now();
+  Object.keys(pairs).forEach(function (c) { if (pairs[c].exp < now || pairs[c].used) delete pairs[c]; });
+  return pairs;
+}
+
+/** Fehlversuche begrenzen: max. 20 falsche Codes je 15 Minuten */
+function pairGuard_(failed) {
+  var p = props_(), g = readPropJson_('PAIR_FAILS', { n: 0, since: Date.now() });
+  if (Date.now() - g.since > PAIR_TTL_MS) g = { n: 0, since: Date.now() };
+  if (failed) { g.n += 1; p.setProperty('PAIR_FAILS', JSON.stringify(g)); }
+  if (g.n >= 20) throw new Error('Zu viele falsche Codes – bitte 15 Minuten warten');
+}
+
+function findPair_(code) {
+  pairGuard_(false);
+  var pairs = cleanPairs_(readPropJson_('PAIRS', {}));
+  var pr = pairs[normKey_(code)];
+  if (!pr) { pairGuard_(true); throw new Error('Code ungültig oder abgelaufen'); }
+  return { pairs: pairs, pr: pr };
+}
+
+function apiPairCheck_(req) {
+  var f = findPair_(req.code);
+  return { valid: true, master: !!f.pr.master, exp: f.pr.exp };
+}
+
+/** Neues Gerät mit Kopplungscode verbinden → eigener Schlüssel für dieses Gerät */
+function apiPairFinish_(req) {
+  var out = withLock_(function () {
+    var f = findPair_(req.code);
+    var role = f.pr.master ? 'chef' : (req.role === 'buero' ? 'buero' : req.role === 'chef' ? 'chef' : null);
+    if (!role) throw new Error('Bitte auswählen: Dominic oder Büro');
+    var devs = devices_();
+    // Gerät war schon gekoppelt (z. B. neu verbinden) → alten Eintrag ersetzen
+    if (req.oldKey) {
+      var oh = hashKey_(normKey_(req.oldKey));
+      Object.keys(devs).forEach(function (id) { if (devs[id].hash === oh && !devs[id].master) delete devs[id]; });
+    }
+    var oldMaster = null;
+    if (f.pr.master) {
+      Object.keys(devs).forEach(function (id) { if (devs[id].master) { devs[id].master = false; oldMaster = id; } });
+    }
+    var name = String(req.name || '').trim() || (role === 'chef' ? 'Dominic' : 'Büro');
+    var nd = newDevice_(devs, role, f.pr.master, name, req.label, req.deviceId);
+    saveDevices_(devs);
+    f.pr.used = Date.now();
+    delete f.pairs[normKey_(req.code)];
+    props_().setProperty('PAIRS', JSON.stringify(f.pairs));
+    return { key: nd.key, device: nd.id, role: role, master: !!f.pr.master, name: name, oldMaster: oldMaster };
+  });
+  // Dominic bekommt Bescheid, wenn ein Gerät dazukommt (Sicherheit)
+  try {
+    var who = out.name + (req.label ? ' · ' + String(req.label).slice(0, 40) : '');
+    var txt = out.master ? 'Master übertragen auf: ' + who : 'Neues Gerät verbunden: ' + who + ' (' + (out.role === 'buero' ? 'Büro' : 'Dominic') + ')';
+    var targets = devicesFor_(function (d, id) { return d.role === 'chef' && id !== req.deviceId; });
+    notify_(targets, 'ELUH App – Geräte', txt, '#/sync');
+  } catch (e) { /* Mitteilung ist nur ein Hinweis */ }
+  delete out.oldMaster;
+  return out;
+}
+
+/** Geräteliste für das Master-Gerät (ohne Schlüssel) */
+function apiDevices_(req) {
+  var devs = devices_(), p = props_();
+  var list = Object.keys(devs).map(function (id) {
+    var d = devs[id];
+    return { id: id, name: d.name, label: d.label, role: d.role, master: !!d.master, created: d.created,
+      seen: Number(p.getProperty('SEEN_' + id) || 0) || d.created, self: id === req.auth.id };
+  }).sort(function (a, b) { return (b.master - a.master) || (a.role < b.role ? -1 : a.role > b.role ? 1 : 0) || (b.seen - a.seen); });
+  var pairs = cleanPairs_(readPropJson_('PAIRS', {}));
+  return { devices: list, legacyOffice: !!p.getProperty('OFFICE_KEY'), legacyChef: !!p.getProperty('APP_KEY'), openPairs: Object.keys(pairs).length };
+}
+
+/** Gerät entfernen → Schlüssel ungültig, Gerät löscht beim nächsten Kontakt seine Daten */
+function apiDeviceRemove_(req) {
+  var client = null;
+  withLock_(function () {
+    var devs = devices_();
+    var d = devs[req.id];
+    if (!d) throw new Error('Gerät nicht gefunden');
+    if (d.master) throw new Error('Das Master-Gerät kann nicht entfernt werden');
+    client = d.client;
+    var rev = readPropJson_('REVOKED', {});
+    rev[d.hash] = Date.now();
+    var ks = Object.keys(rev).sort(function (a, b) { return rev[b] - rev[a]; }).slice(0, 60);
+    var keep = {}; ks.forEach(function (k) { keep[k] = rev[k]; });
+    props_().setProperty('REVOKED', JSON.stringify(keep));
+    delete devs[req.id];
+    saveDevices_(devs);
+    props_().deleteProperty('SEEN_' + req.id);
+  });
+  if (client) {
+    withLock_(function () {
+      var db = readJson_('push.json') || { devices: {} };
+      if (db.devices[client]) { delete db.devices[client]; writeJson_('push.json', db); }
+    });
+  }
+  return { removed: true };
+}
+
+/** Alten gemeinsamen Büro-Schlüssel abschalten (wenn alle Büro-Geräte neu gekoppelt sind) */
+function apiLegacyOff_(req) {
+  props_().deleteProperty('OFFICE_KEY');
+  props_().deleteProperty('APP_KEY');
+  return { off: true };
+}
+
+/** NOTFALL (im Apps-Script-Editor ausführen), z. B. Handy verloren:
+ *  Master wird entzogen und ein Kopplungscode für ein neues Master-Gerät erzeugt (24 Std. gültig).
+ *  Code in der App unter „Gerät verbinden → Code eingeben“ eintippen. */
+function masterNotfall() {
+  withLock_(function () {
+    var devs = devices_();
+    Object.keys(devs).forEach(function (id) { if (devs[id].master) devs[id].master = false; });
+    saveDevices_(devs);
+    var pairs = cleanPairs_(readPropJson_('PAIRS', {}));
+    var code = makeLongKey_(PAIR_CODE_LEN);
+    pairs[normKey_(code)] = { exp: Date.now() + 24 * 60 * 60 * 1000, master: true, by: 'notfall' };
+    props_().setProperty('PAIRS', JSON.stringify(pairs));
+    props_().deleteProperty('PAIR_FAILS');
+    Logger.log('NOTFALL-KOPPLUNGSCODE (24 Std. gültig, einmalig): ' + code);
+  });
+}
+
+/** Übersicht der Geräte im Ausführungsprotokoll */
+function zeigeGeraete() {
+  var d = devices_();
+  Object.keys(d).forEach(function (id) { Logger.log((d[id].master ? '[MASTER] ' : '') + d[id].name + ' · ' + (d[id].label || '') + ' · ' + d[id].role); });
+}
+
+/** Büro-Schlüssel anzeigen oder neu erzeugen (nur Dominic) */
 function apiOfficeKey_(req) {
   var p = props_();
   if (req.renew || !p.getProperty('OFFICE_KEY')) p.setProperty('OFFICE_KEY', makeKey_());
@@ -389,7 +647,7 @@ function apiOfficeMark_(req) {
 }
 
 // ============================================================
-// Termine (für Chef und Büro) + Erinnerungen
+// Termine (für Dominic und Büro) + Erinnerungen
 // Termin: {id, title, date:'JJJJ-MM-TT', time:'HH:MM', end:'HH:MM', allDay, customerId, customerName,
 //          address, person, note, remind:[Minuten], createdBy, updatedAt, deleted}
 // ============================================================

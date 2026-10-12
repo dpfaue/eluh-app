@@ -16,11 +16,12 @@
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="#/auftraege" aria-label="Start">
+    <a class="brand" href="#/heute" aria-label="Start">
       <span class="brand-mark">eluh</span>
       <span class="brand-text">Kundendienst</span>
     </a>
     <nav class="tabs" aria-label="Hauptbereiche">
+      <a href="#/heute" data-tab="heute">Heute</a>
       <a href="#/auftraege" data-tab="auftraege" class="chef-only">Aufträge</a>
       <a href="#/buero" data-tab="buero" class="buero-only">Aufträge</a>
       <a href="#/termine" data-tab="termine">Termine</a>
@@ -34,6 +35,7 @@
   <main id="view" tabindex="-1"></main>
 
   <nav class="bottombar" aria-label="Hauptbereiche">
+    <a href="#/heute" data-tab="heute"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5 12 4l8 7.5V20a1 1 0 0 1-1 1h-4.5v-6h-5v6H5a1 1 0 0 1-1-1z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span>Heute</span></a>
     <a href="#/auftraege" data-tab="auftraege" class="chef-only"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l5 5v13H7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v5h5M10 13h6M10 17h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>Aufträge</span></a>
     <a href="#/buero" data-tab="buero" class="buero-only"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l5 5v13H7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v5h5M10 13h6M10 17h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>Aufträge</span></a>
     <a href="#/termine" data-tab="termine"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 10h17M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>Termine</span></a>
@@ -57,5 +59,7 @@
   <script src="app.js"></script>
   <script src="termine.js"></script>
   <script src="buero.js"></script>
+  <script src="geraete.js"></script>
+  <script src="heute.js"></script>
 </body>
 </html>

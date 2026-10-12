@@ -104,7 +104,7 @@
     var s = await Settings.get();
     if (!backendConfigured()) { var e0 = new Error('Backend noch nicht eingerichtet'); e0.offline = true; throw e0; }
     var key = (opts && opts.key) || s.key;
-    if (!key) { var e1 = new Error('Kein App-Schlüssel hinterlegt'); e1.nokey = true; throw e1; }
+    if (!key && !(opts && opts.noKey)) { var e1 = new Error('Kein App-Schlüssel hinterlegt'); e1.nokey = true; throw e1; }
     var body = JSON.stringify(Object.assign({ action: action, key: key }, payload || {}));
     var ctrl = new AbortController();
     var t = setTimeout(function () { ctrl.abort(); }, (opts && opts.timeout) || 90000);
@@ -124,8 +124,11 @@
     var j;
     try { j = await res.json(); } catch (err) { var e4 = new Error('Ungültige Serverantwort'); e4.offline = true; throw e4; }
     if (!j.ok) {
-      var e5 = new Error(j.error === 'auth' ? 'App-Schlüssel ungültig' : (j.error || 'Fehler'));
-      e5.auth = j.error === 'auth';
+      var e5 = new Error(j.error === 'auth' ? 'App-Schlüssel ungültig' : j.error === 'revoked' ? 'Gerät wurde entfernt' : (j.error || 'Fehler'));
+      e5.auth = j.error === 'auth' || j.error === 'revoked';
+      e5.revoked = j.error === 'revoked';
+      // Gerät wurde am Master-Gerät entfernt → alle Daten auf diesem Gerät löschen (z. B. verlorenes Handy)
+      if (e5.revoked && !(opts && opts.key)) { await wipeLocal(); emit('revoked'); }
       throw e5;
     }
     return j;
@@ -887,8 +890,28 @@
   /** Rolle, Push-Schlüssel und Kalender-Link vom Server holen */
   async function refreshPing() {
     var j = await api('ping', {});
-    await Settings.set({ role: j.role, vapidKey: j.vapidKey, icsToken: j.ics });
+    await Settings.set({ role: j.role, vapidKey: j.vapidKey, icsToken: j.ics, isMaster: !!j.master, hasMaster: !!j.hasMaster, legacyKey: !!j.legacy });
     return j;
+  }
+
+  /** Alle lokalen Daten löschen (entferntes Gerät) */
+  async function wipeLocal() {
+    var stores = ['auftraege', 'files', 'outbox', 'thumbs', 'termine', 'kv'];
+    for (var i = 0; i < stores.length; i++) { try { await DB.clear(stores[i]); } catch (e) { /* */ } }
+    try { var reg = await navigator.serviceWorker.getRegistration(); var sub = reg && await reg.pushManager.getSubscription(); if (sub) await sub.unsubscribe(); } catch (e) { /* */ }
+    await DB.put('kv', { revoked: Date.now() }, 'settings');
+  }
+
+  /** Gerätebezeichnung für die Geräteliste (z. B. „iPhone“, „Windows-PC“) */
+  function deviceLabel() {
+    var ua = navigator.userAgent || '';
+    if (/iPhone/.test(ua)) return 'iPhone';
+    if (/iPad/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) return 'iPad';
+    if (/Android/.test(ua)) return /Mobile/.test(ua) ? 'Android-Handy' : 'Android-Tablet';
+    if (/Macintosh/.test(ua)) return 'Mac';
+    if (/Windows/.test(ua)) return 'Windows-PC';
+    if (/Linux/.test(ua)) return 'Linux-PC';
+    return 'Gerät';
   }
 
   window.addEventListener('online', function () { Sync.state.offline = false; Sync.schedule(200); });
@@ -896,7 +919,7 @@
 
   window.Store = {
     DB: DB, Settings: Settings, Index: Index, IdMap: IdMap, Auftraege: Auftraege, Files: Files,
-    Outbox: Outbox, Sync: Sync, api: api, backendConfigured: backendConfigured,
+    Outbox: Outbox, Sync: Sync, api: api, backendConfigured: backendConfigured, wipeLocal: wipeLocal, deviceLabel: deviceLabel,
     createCustomer: createCustomer, createFolder: createFolder, uploadFile: uploadFile, queueFiling: queueFiling,
     addAuftragPhoto: addAuftragPhoto, removeAuftragPhoto: removeAuftragPhoto, Profile: Profile, Thumbs: Thumbs,
     loadPdfJs: loadPdfJs, shrinkImage: shrinkImage,

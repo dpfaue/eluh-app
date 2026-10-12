@@ -95,7 +95,7 @@ button { cursor: pointer; }
 /* ---------- Untere Navigation (Handy) ---------- */
 .bottombar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
-  display: grid; grid-template-columns: repeat(4, 1fr);
+  display: grid; grid-template-columns: repeat(5, 1fr);
   padding: 6px 8px calc(6px + var(--safe-b));
   background: color-mix(in srgb, var(--surface) 94%, transparent);
   backdrop-filter: saturate(1.4) blur(12px);
@@ -320,3 +320,18 @@ body.role-buero .chef-only { display: none !important; }
 .big-actions .btn { min-height: 54px; font-size: 16px; }
 .office-row .main { cursor: pointer; }
 .hint-card { background: var(--info-soft); color: var(--info); border-radius: 12px; padding: 12px 14px; font-size: 14.5px; }
+
+/* ---- 2.3: Geräte koppeln (QR), Heute-Startseite, Textbausteine ---- */
+.btn.big { min-height: 54px; font-size: 17px; }
+.hr { height: 1px; background: var(--line, #e5e5e5); margin: 4px 0; }
+.qr-wrap { display: flex; justify-content: center; transition: opacity .3s; }
+.qr-wrap .qr { width: min(72vw, 280px); height: auto; border-radius: 10px; border: 1px solid var(--line, #e5e5e5); background: #fff; }
+.pair-code { font-family: var(--mono); font-size: 26px; font-weight: 800; letter-spacing: .08em; }
+.scan-box { position: relative; width: 100%; aspect-ratio: 1 / 1; max-height: 60vh; background: #000; border-radius: 12px; overflow: hidden; }
+.scan-box video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.scan-frame { position: absolute; inset: 18%; border: 3px solid rgba(255,255,255,.9); border-radius: 14px; box-shadow: 0 0 0 999px rgba(0,0,0,.35); pointer-events: none; }
+.today-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; }
+.today-actions .btn { justify-content: center; min-height: 48px; }
+.tb-box { border: 1px dashed var(--line, #ddd); border-radius: 12px; padding: 10px 12px; }
+.tb-box .tb-label { font-size: 12.5px; font-weight: 700; color: var(--ink-3); margin: 2px 0 6px; text-transform: uppercase; letter-spacing: .03em; }
+.tb-box .chips { margin-bottom: 6px; }

@@ -107,6 +107,23 @@
     });
   }
 
+  /** Eingabe-Dialog → liefert den Text (oder null) */
+  function inputBox(title, label, value, okLabel) {
+    return new Promise(function (resolve) {
+      var done = false;
+      var sheet = openModal(
+        '<div class="sheet-head"><h3>' + esc(title) + '</h3></div><div class="sheet-body stack">' +
+        '<label class="field"><span>' + esc(label) + '</span><input id="ibIn" autocomplete="off" value="' + esc(value || '') + '"></label>' +
+        '<div class="btn-row" style="justify-content:flex-end"><button class="btn ghost" data-no>Abbrechen</button><button class="btn primary" data-yes>' + esc(okLabel || 'OK') + '</button></div></div>',
+        { onClose: function () { if (!done) resolve(null); } });
+      var inp = $('#ibIn', sheet);
+      setTimeout(function () { inp.focus(); inp.select(); }, 50);
+      $('[data-no]', sheet).onclick = function () { done = true; closeModal(); resolve(null); };
+      $('[data-yes]', sheet).onclick = function () { var v = inp.value.trim(); if (!v) return; done = true; closeModal(); resolve(v); };
+      inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') $('[data-yes]', sheet).click(); });
+    });
+  }
+
   /** Dialog mit mehreren Antworten → liefert den Schlüssel der gewählten Antwort (oder null) */
   function choiceBox(title, html, buttons) {
     return new Promise(function (resolve) {
@@ -274,6 +291,7 @@
     var cls = 'ok', text;
     if (!S.backendConfigured()) { cls = 'warn'; text = 'Nur lokal'; }
     else if (!s.key) { cls = 'warn'; text = 'Nicht verbunden'; }
+    else if (st.authError) { cls = 'err'; text = 'Neu verbinden'; }
     else if (st.running) { cls = 'run'; text = 'Synchronisiere…'; }
     else if (!navigator.onLine || st.offline) { cls = st.pending ? 'warn' : ''; text = 'Offline' + (st.pending ? ' · ' + st.pending + ' wartend' : ''); }
     else if (st.error) { cls = 'err'; text = 'Sync-Fehler'; }
@@ -283,6 +301,7 @@
     pill.innerHTML = '<span class="dot"></span><span>' + esc(text) + '</span>';
   }
   document.getElementById('syncPill').onclick = function () {
+    if (S.Sync.state.authError) { location.hash = '#/setup'; return; }
     if (location.hash.indexOf('#/sync') === 0) S.Sync.run(); else location.hash = '#/sync';
   };
 
@@ -336,8 +355,8 @@
     var s = await S.Settings.get();
     var isBuero = s.role === 'buero';
     document.body.classList.toggle('role-buero', isBuero);
-    var hash = location.hash || (isBuero ? '#/buero' : '#/auftraege');
-    if (S.backendConfigured() && !s.key && !s.skipSetup && hash.indexOf('#/setup') !== 0) {
+    var hash = location.hash || '#/heute';
+    if (S.backendConfigured() && !s.key && !s.skipSetup && !/^#\/(setup|pair)/.test(hash)) {
       location.replace('#/setup');
       return;
     }
@@ -356,7 +375,7 @@
         return;
       }
     }
-    location.replace(isBuero ? '#/buero' : '#/auftraege');
+    location.replace('#/heute');
   }
   window.addEventListener('hashchange', router);
 
@@ -369,56 +388,7 @@
     onCleanup(function () { offs.forEach(function (off) { off(); }); });
   }
 
-  // ------------------------------------------------------------------
-  // Einrichtung (App-Schlüssel)
-  // ------------------------------------------------------------------
-  route(/^#\/setup(?:\?.*)?$/, async function () {
-    view.innerHTML =
-      '<div class="setup card pad stack">' +
-      '<img class="logo" src="logo.png" alt="eluh Anlagen Kyritz">' +
-      '<h1 style="margin:0;font-size:22px">Mit Google Drive verbinden</h1>' +
-      '<p class="muted" style="margin:0">Einmal pro Gerät den App-Schlüssel eingeben. Danach synchronisiert sich alles automatisch – auch nach Offline-Phasen.</p>' +
-      '<label class="field"><span>App-Schlüssel</span><input class="key-input" id="keyIn" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX-XXXX"></label>' +
-      '<label class="field"><span>Dein Name (für Termine und Erinnerungen)</span><input id="nameIn" autocomplete="name" placeholder="z. B. Dominic oder Anja"></label>' +
-      '<div id="setupMsg"></div>' +
-      '<div class="btn-row"><button class="btn primary" id="keyGo">Verbinden</button>' +
-      '<button class="btn ghost" id="keySkip">Erstmal ohne Verbindung</button></div></div>';
-    var m = /[#&?]k=([A-Za-z0-9-]+)/.exec(location.href);
-    if (m) $('#keyIn').value = m[1];
-    var s0 = await S.Settings.get();
-    if (s0.deviceName) $('#nameIn').value = s0.deviceName;
-    var mn = /[?&]n=([^&]+)/.exec(location.href);
-    if (mn) $('#nameIn').value = decodeURIComponent(mn[1]);
-    $('#keyGo').onclick = async function () {
-      var key = $('#keyIn').value.trim();
-      var name = $('#nameIn').value.trim();
-      if (!key) return;
-      if (!name) { toast('Bitte deinen Namen eingeben', true); return; }
-      var btn = this;
-      btn.disabled = true;
-      $('#setupMsg').innerHTML = '<div class="notice info"><span class="spinner"></span> Verbindung wird geprüft…</div>';
-      try {
-        var pj = await S.api('ping', {}, { key: key, timeout: 30000 });
-        var before = await S.Settings.get();
-        if (before.role && before.role !== pj.role) {
-          // Gerät wechselt zwischen Dominic- und Büro-Zugang → lokale Auftragsdaten entfernen
-          await S.DB.clear('auftraege'); await S.DB.clear('outbox'); await S.DB.put('kv', 0, 'seq'); await S.DB.put('kv', [], 'officeList');
-        }
-        await S.Settings.set({ key: key, skipSetup: false, role: pj.role, vapidKey: pj.vapidKey, icsToken: pj.ics, deviceName: name });
-        S.Sync.state.authError = false;
-        S.Push.register().catch(function () {});
-        toast(pj.role === 'buero' ? 'Verbunden (Büro-Zugang)' : 'Verbunden – Kundendatenbank wird geladen');
-        location.hash = pj.role === 'buero' ? '#/buero' : '#/auftraege';
-        S.Sync.run({ fullIndex: true });
-      } catch (e) {
-        $('#setupMsg').innerHTML = '<div class="notice err">' + esc(e.auth ? 'Schlüssel stimmt nicht.' : e.message) + '</div>';
-      } finally { btn.disabled = false; }
-    };
-    $('#keySkip').onclick = async function () {
-      await S.Settings.set({ skipSetup: true });
-      location.hash = '#/auftraege';
-    };
-  }, 'sync');
+  // Einrichtung / Gerät verbinden: siehe geraete.js
 
   // ------------------------------------------------------------------
   // Aufträge – Übersicht
@@ -573,6 +543,43 @@
   }
 
   var ART_PRESETS = ['Wartung', 'Störung', 'Reparatur', 'Montage', 'Inbetriebnahme', 'Abgasmessung'];
+  // Textbausteine (Standardtexte aus Dominics Wartungs-Aufträgen) – nur in Dominics Auftrags-Editor
+  var TB_STD = '- Wartung nach Vertrag durchgeführt\n- Brennraum i.O\n- Brenner i.O\n- Funktion i.O\n- Abgasmessung i.O';
+  var TB_TEMPLATES = [
+    { name: 'Wartung Gastherme', art: 'Wartung Gastherme', text: TB_STD },
+    { name: 'Wartung Ölkessel', art: 'Wartung Ölkessel', text: TB_STD },
+    { name: 'Wartung Wärmepumpe', art: 'Wartung Wärmepumpe', text: '- Wartung durchgeführt\n- Magnetitabscheider gespült\n- Anlage auf Dichtheit geprüft i.O\n- Sichtprüfung der gesamten Anlage i.O\n- Sichtprüfung Außengerät i.O' }
+  ];
+  var TB_PARTS = ['Öldüse', 'Ölfilter', 'Brennerdichtung', 'Brennkammerdichtung'];
+  /** Zeile „- A + B getauscht“ im Text finden */
+  function tbSwapLine(lines) {
+    for (var i = 0; i < lines.length; i++) if (/^\s*-?\s*.+\bgetauscht\s*$/i.test(lines[i]) && TB_PARTS.some(function (p) { return lines[i].indexOf(p) >= 0; })) return i;
+    return -1;
+  }
+  function tbParts(text) {
+    var lines = String(text || '').split('\n'), i = tbSwapLine(lines);
+    if (i < 0) return [];
+    return TB_PARTS.filter(function (p) { return new RegExp('(^|[\\s+,-])' + p + '([\\s+,]|$)').test(lines[i].replace(/getauscht/i, '')); });
+  }
+  /** Teil in der „getauscht“-Zeile an- oder abwählen (Zeile steht nach „Brenner i.O“, sonst vor „Funktion i.O“, sonst am Ende) */
+  function tbToggle(text, part) {
+    var lines = String(text || '').replace(/\s+$/, '').split('\n');
+    if (lines.length === 1 && !lines[0]) lines = [];
+    var parts = tbParts(lines.join('\n'));
+    var at = tbSwapLine(lines);
+    if (parts.indexOf(part) >= 0) parts = parts.filter(function (p) { return p !== part; }); else parts.push(part);
+    parts = TB_PARTS.filter(function (p) { return parts.indexOf(p) >= 0; });
+    var line = parts.length ? '- ' + parts.join(' + ') + ' getauscht' : null;
+    if (at >= 0) { if (line) lines[at] = line; else lines.splice(at, 1); }
+    else if (line) {
+      var pos = -1;
+      lines.forEach(function (l, i) { if (/Brenner i\.?\s?O/i.test(l)) pos = i + 1; });
+      if (pos < 0) lines.forEach(function (l, i) { if (pos < 0 && /Funktion i\.?\s?O/i.test(l)) pos = i; });
+      if (pos < 0) pos = lines.length;
+      lines.splice(pos, 0, line);
+    }
+    return lines.join('\n');
+  }
   var EINHEITEN = ['Stck.', 'm', 'kg', 'Std.', 'l', 'Psch.'];
 
   route(/^#\/auftrag\/([\w-]+)$/, async function (id) {
@@ -603,6 +610,7 @@
       '<section class="form-section"><h3>Auftrag</h3><div class="stack">' +
       input('art', 'Art des Auftrags') +
       '<div class="chips" id="artChips">' + ART_PRESETS.map(function (a) { return '<button type="button" class="chip" data-art="' + a + '">' + a + '</button>'; }).join('') + '</div>' +
+      '<div class="tb-box" id="tbBox"></div>' +
       '<label class="field"><span>Arbeitsumfang / Ausgeführte Arbeiten</span><textarea data-f="arbeitsumfang" rows="8">' + esc(f.arbeitsumfang) + '</textarea></label>' +
       input('ort_datum', 'Ort, Datum') +
       '</div></section>' +
@@ -719,6 +727,77 @@
     ta.addEventListener('input', grow);
     setTimeout(grow, 0);
 
+    // ---- Textbausteine ----
+    async function drawTb() {
+      var box = $('#tbBox');
+      if (!box) return;
+      var prof = await S.Profile.get();
+      var own = prof.textbausteine || [];
+      var parts = tbParts(rec.f.arbeitsumfang);
+      box.innerHTML = '<div class="tb-label">Textbausteine</div>' +
+        '<div class="chips">' + TB_TEMPLATES.concat(own).map(function (t, i) {
+          return '<button type="button" class="chip" data-tb="' + i + '">' + esc(t.name) + '</button>';
+        }).join('') + '</div>' +
+        '<div class="tb-label">Getauscht</div><div class="chips">' + TB_PARTS.map(function (p) {
+          return '<button type="button" class="chip' + (parts.indexOf(p) >= 0 ? ' on' : '') + '" data-tbp="' + esc(p) + '">' + esc(p) + '</button>';
+        }).join('') + '</div>' +
+        '<div class="btn-row"><button type="button" class="btn small ghost" id="tbSave">Text als eigenen Baustein speichern</button>' +
+        (own.length ? '<button type="button" class="btn small ghost" id="tbManage">Eigene verwalten</button>' : '') + '</div>';
+      var all = TB_TEMPLATES.concat(own);
+      $$('[data-tb]', box).forEach(function (b) {
+        b.onclick = async function () {
+          var t = all[Number(b.getAttribute('data-tb'))];
+          var cur = String(rec.f.arbeitsumfang || '').trim();
+          var text = t.text;
+          if (cur && cur !== t.text) {
+            var how = await choiceBox('„' + t.name + '“ einsetzen', '<p class="muted" style="margin:0">Im Feld steht schon Text.</p>', [
+              { key: 'replace', label: 'Text ersetzen', cls: 'primary' }, { key: 'append', label: 'Unten anhängen' }]);
+            if (!how) return;
+            if (how === 'append') text = cur + '\n' + t.text;
+          }
+          ta.value = text; rec.f.arbeitsumfang = text; grow();
+          var art = $('[data-f=art]');
+          if (t.art && (!String(rec.f.art || '').trim() || /^wartung$/i.test(String(rec.f.art).trim()) || TB_TEMPLATES.some(function (x) { return x.art === rec.f.art; }))) {
+            art.value = t.art; rec.f.art = t.art; drawPath();
+          }
+          markChanged(); drawTb();
+        };
+      });
+      $$('[data-tbp]', box).forEach(function (b) {
+        b.onclick = function () {
+          var text = tbToggle(rec.f.arbeitsumfang, b.getAttribute('data-tbp'));
+          ta.value = text; rec.f.arbeitsumfang = text; grow();
+          markChanged(); drawTb();
+        };
+      });
+      $('#tbSave', box).onclick = async function () {
+        var text = String(rec.f.arbeitsumfang || '').trim();
+        if (!text) { toast('Erst Text ins Feld „Arbeitsumfang“ schreiben', true); return; }
+        var name = await inputBox('Eigener Textbaustein', 'Name (z. B. „Wartung Brennwert“)', String(rec.f.art || '').trim(), 'Speichern');
+        if (!name || !name.trim()) return;
+        var p = await S.Profile.get();
+        var list = (p.textbausteine || []).filter(function (x) { return x.name !== name.trim(); });
+        list.push({ name: name.trim().slice(0, 40), art: String(rec.f.art || '').trim(), text: text });
+        await S.Profile.set({ textbausteine: list });
+        toast('Baustein gespeichert – auf allen deinen Geräten');
+        drawTb();
+      };
+      var mg = $('#tbManage', box);
+      if (mg) mg.onclick = async function () {
+        var p = await S.Profile.get();
+        var list = p.textbausteine || [];
+        var key = await choiceBox('Eigenen Baustein löschen', '<p class="muted" style="margin:0">Welchen Baustein entfernen?</p>',
+          list.map(function (x, i) { return { key: String(i), label: x.name + ' löschen', cls: 'ghost danger' }; }));
+        if (key === null) return;
+        list.splice(Number(key), 1);
+        await S.Profile.set({ textbausteine: list });
+        drawTb();
+      };
+    }
+    ta.addEventListener('input', U_debounceTb);
+    function U_debounceTb() { clearTimeout(U_debounceTb.t); U_debounceTb.t = setTimeout(function () { var p = tbParts(ta.value); $$('[data-tbp]').forEach(function (b) { b.classList.toggle('on', p.indexOf(b.getAttribute('data-tbp')) >= 0); }); }, 300); }
+    drawTb();
+
     function drawPath() {
       if (!$('#pathPreview')) return;
       var segs = window.PdfGen.folderSegments(rec);
@@ -731,15 +810,18 @@
 
     // ---- Speichern ----
     function setSaveState(t) { var el = $('#saveState'); if (el) el.textContent = t; }
+    var pendingSave = false; // ungespeicherte Eingaben -> Sync darf die Seite nicht neu aufbauen
     var saving = debounce(async function () {
       var cur = await S.Auftraege.get(rec.id);
       if (cur) { rec.photos = cur.photos || []; rec.drive = cur.drive; rec.office = mergeOffice(rec, cur); }
       await S.Auftraege.save(rec);
+      pendingSave = false;
       setSaveState('Gespeichert ' + fmtTime(Date.now()));
       drawStatus();
     }, 500);
     function markChanged() {
       if (rec.status === 'fertig') rec.needsRefile = true;
+      pendingSave = true;
       setSaveState('Speichert…');
       saving();
     }
@@ -967,7 +1049,7 @@
       var fresh = await S.Auftraege.get(rec.id);
       if (!fresh) return;
       if (fresh.deleted) { toast('Auftrag wurde auf einem anderen Gerät gelöscht'); location.hash = '#/auftraege'; return; }
-      var busy = !modal.hidden || (document.activeElement && document.activeElement.matches('input,textarea'));
+      var busy = pendingSave || !modal.hidden || (document.activeElement && document.activeElement.matches('input,textarea'));
       if (fresh.updatedAt > rec.updatedAt && editable(fresh) !== editable(rec) && !fresh._dirty && !busy) {
         router();
         return;
@@ -1338,7 +1420,7 @@
         '<button class="btn primary" id="syncNow"' + (st.running ? ' disabled' : '') + '>' + (st.running ? '<span class="spinner"></span> ' + esc(st.phase || 'Läuft') + '…' : 'Jetzt synchronisieren') + '</button></div>' +
         (!S.backendConfigured() ? '<div class="notice warn">Das Google-Drive-Backend ist in dieser App-Version noch nicht eingetragen – alles wird vorerst nur auf diesem Gerät gespeichert.</div>' : '') +
         (S.backendConfigured() && !s.key ? '<div class="notice warn">Dieses Gerät ist noch nicht verbunden. <a href="#/setup">App-Schlüssel eingeben</a></div>' : '') +
-        (st.authError ? '<div class="notice err">Der App-Schlüssel wird nicht mehr akzeptiert. <a href="#/setup">Neu eingeben</a></div>' : '') +
+        (st.authError ? '<div class="notice err">Der Zugang dieses Geräts wird nicht mehr akzeptiert. <a href="#/setup">Neu verbinden</a></div>' : '') +
         (st.error && !st.authError ? '<div class="notice ' + (st.offline ? 'warn' : 'err') + '">' + esc(st.offline ? 'Keine Verbindung – Änderungen bleiben gespeichert und werden automatisch nachgeholt.' : 'Letzter Fehler: ' + st.error) + '</div>' : '') +
         '<div class="card pad" style="margin-top:12px"><dl class="kv">' +
         '<dt>Status</dt><dd>' + (navigator.onLine ? 'Online' : 'Offline') + (st.running ? ' · synchronisiert gerade' : '') + '</dd>' +
@@ -1358,22 +1440,22 @@
         '<h2>Offline-Daten</h2><div class="card pad stack" id="offBox"></div>' +
         '<h2>Fotos &amp; Unterschrift</h2><div class="card pad stack" id="prefBox"></div>' +
         '<h2>Benachrichtigungen</h2><div class="card pad stack" id="pushBox"></div>' +
-        '<h2>Büro-Zugang</h2><div class="card pad stack" id="bueroBox"></div>' +
+        '<h2>Geräte &amp; Zugänge</h2><div class="card pad stack" id="bueroBox"></div>' +
         '<h2>Gerät</h2>' +
         '<div class="btn-row">' +
         '<button class="btn" id="fullIndex">Kundendatenbank komplett neu laden</button>' +
-        '<a class="btn" href="#/setup">App-Schlüssel ändern</a></div>' +
+        '<a class="btn" href="#/setup">Neu verbinden</a></div>' +
         '<h2>App installieren</h2>' +
         '<div class="card pad small stack">' +
         '<div><b>iPhone / iPad:</b> Seite in Safari öffnen → Teilen-Symbol → „Zum Home-Bildschirm“. Danach nur noch über das Symbol starten.</div>' +
         '<div><b>MacBook:</b> Safari → Ablage → „Zum Dock hinzufügen“ (oder Chrome → Installieren-Symbol in der Adressleiste).</div>' +
-        '<div>Jedes Gerät einmal mit dem App-Schlüssel verbinden. Danach gleicht sich alles automatisch ab – beim Start, alle paar Minuten und sobald wieder Internet da ist.</div></div>';
+        '<div>Jedes Gerät einmal per QR-Code vom Master-Gerät verbinden. Danach gleicht sich alles automatisch ab – beim Start, alle paar Minuten und sobald wieder Internet da ist.</div></div>';
       $('#syncNow').onclick = function () { S.Sync.run(); };
       $('#fullIndex').onclick = function () { S.Sync.run({ fullIndex: true }); toast('Kundendatenbank wird neu geladen…'); };
       drawOffline(offNames);
       drawPrefs();
       renderPushBox($('#pushBox'));
-      drawBueroBox();
+      window.Geraete.renderBox($('#bueroBox'), drawBueroBox);
       $$('[data-drop]').forEach(function (b) {
         b.onclick = async function () {
           var ok = await confirmBox('Eintrag verwerfen?', 'Dieser Schritt wird nicht mehr zum Server übertragen.', 'Verwerfen', true);
@@ -1461,10 +1543,9 @@
       };
     }
     // ---- Büro-Zugang (Schlüssel für die Mitarbeiter) ----
-    async function drawBueroBox() {
-      var box = $('#bueroBox');
+    async function drawBueroBox(box) {
       if (!box) return;
-      box.innerHTML = '<div class="small">Die Mitarbeiter im Büro nutzen dieselbe App-Adresse, aber mit eigenem <b>Büro-Schlüssel</b>. Sie sehen nur die Aufträge, die du ans Büro schickst (zum Drucken/Abrechnen), die Termine und die Kundendatenbank (nur lesen). Entwürfe und Einstellungen sehen sie nicht.</div>' +
+      box.innerHTML = '<div class="small"><b>Bisheriger Büro-Schlüssel</b> (bis zur Umstellung auf QR-Code): Die Mitarbeiter im Büro nutzen dieselbe App-Adresse, aber mit eigenem <b>Büro-Schlüssel</b>. Sie sehen nur die Aufträge, die du ans Büro schickst (zum Drucken/Abrechnen), die Termine und die Kundendatenbank (nur lesen). Entwürfe und Einstellungen sehen sie nicht.</div>' +
         '<div id="okBox" class="small muted">' + (navigator.onLine ? '<span class="spinner"></span>' : 'Schlüssel nur online abrufbar.') + '</div>';
       if (!navigator.onLine) return;
       try {
@@ -1481,7 +1562,7 @@
           var ok = await confirmBox('Neuen Büro-Schlüssel erzeugen?', 'Der alte Büro-Schlüssel funktioniert danach nicht mehr – alle Büro-Geräte müssen den neuen eingeben.', 'Neu erzeugen', true);
           if (!ok) return;
           await S.api('officeKey', { renew: true });
-          drawBueroBox();
+          drawBueroBox(box);
         };
       } catch (e) { if ($('#okBox')) $('#okBox').textContent = 'Konnte nicht geladen werden: ' + e.message; }
     }
@@ -1582,7 +1663,7 @@
     route: route, view: view, esc: esc, $: $, $$: $$, toast: toast, openModal: openModal, closeModal: closeModal,
     confirmBox: confirmBox, choiceBox: choiceBox, ICONS: ICONS, fmtDate: fmtDate, fmtDT: fmtDT, fmtTime: fmtTime, isoToDe: isoToDe,
     debounce: debounce, matchQuery: matchQuery, auftragTitle: auftragTitle, auftragDate: auftragDate, officeStatus: officeStatus,
-    showAuftragPdf: showAuftragPdf, openCustomerPicker: openCustomerPicker, parseCustomer: parseCustomer, rerenderOn: rerenderOn,
+    auftragStatus: auftragStatus, showAuftragPdf: showAuftragPdf, openCustomerPicker: openCustomerPicker, parseCustomer: parseCustomer, rerenderOn: rerenderOn,
     onCleanup: onCleanup, current: function () { return current; }, renderPushBox: renderPushBox, isIOS: isIOS, fileIcon: fileIcon
   };
 })();
