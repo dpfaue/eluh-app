@@ -1449,7 +1449,7 @@
         '<div class="card pad small stack">' +
         '<div><b>iPhone / iPad:</b> Seite in Safari öffnen → Teilen-Symbol → „Zum Home-Bildschirm“. Danach nur noch über das Symbol starten.</div>' +
         '<div><b>MacBook:</b> Safari → Ablage → „Zum Dock hinzufügen“ (oder Chrome → Installieren-Symbol in der Adressleiste).</div>' +
-        '<div>Jedes Gerät einmal per QR-Code vom Master-Gerät verbinden. Danach gleicht sich alles automatisch ab – beim Start, alle paar Minuten und sobald wieder Internet da ist.</div></div>';
+        '<div>Jedes Gerät einmal verbinden: dort den QR-Code anzeigen, am Master-Gerät scannen und freigeben. Danach gleicht sich alles automatisch ab – beim Start, alle paar Minuten und sobald wieder Internet da ist.</div></div>';
       $('#syncNow').onclick = function () { S.Sync.run(); };
       $('#fullIndex').onclick = function () { S.Sync.run({ fullIndex: true }); toast('Kundendatenbank wird neu geladen…'); };
       drawOffline(offNames);

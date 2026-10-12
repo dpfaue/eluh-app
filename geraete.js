@@ -1,4 +1,4 @@
-/* ELUH App – Geräte: Master-Gerät, Koppeln per QR-Code / Kopplungscode, Geräteliste */
+/* ELUH App – Geräte: Master-Gerät, neue Geräte (zeigen QR, Master scannt + gibt frei), Geräteliste */
 (function () {
   'use strict';
   var S = window.Store, U = window.UI;
@@ -63,7 +63,7 @@
       var sheet = U.openModal(
         '<div class="sheet-head"><h3>QR-Code scannen</h3><button class="btn small ghost" data-close aria-label="Schließen">' + U.ICONS.close + '</button></div>' +
         '<div class="sheet-body stack"><div class="scan-box"><video id="scanVideo" playsinline muted autoplay></video><div class="scan-frame"></div></div>' +
-        '<div class="small muted" id="scanMsg">Den QR-Code vom Master-Gerät in den Rahmen halten.</div></div>',
+        '<div class="small muted" id="scanMsg">Den QR-Code vom neuen Gerät in den Rahmen halten.</div></div>',
         { onClose: function () { if (!done) { done = true; stop(); resolve(null); } } });
       try {
         var jsQR = await loadScript('jsqr.min.js', 'jsQR');
@@ -91,17 +91,32 @@
         tick();
       } catch (e) {
         var msg = $('#scanMsg', sheet);
-        if (msg) msg.innerHTML = '<span class="notice err" style="display:block">Kamera nicht verfügbar (' + esc(e.message || e.name) + '). Bitte den Code unter dem QR-Code abtippen.</span>';
+        if (msg) msg.innerHTML = '<span class="notice err" style="display:block">Kamera nicht verfügbar (' + esc(e.message || e.name) + '). Bitte den Code unter dem QR-Code am neuen Gerät eintippen.</span>';
       }
     });
   }
 
   // ------------------------------------------------------------------
-  // Einrichtung / Gerät verbinden
+  // Einrichtung / Gerät verbinden: dieses Gerät zeigt einen QR-Code, der Master scannt ihn und gibt frei
   // ------------------------------------------------------------------
+  var ALPHA = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  function newKey() {
+    var b = new Uint8Array(32), out = '';
+    crypto.getRandomValues(b);
+    for (var i = 0; i < 32; i++) out += ALPHA.charAt(b[i] % 32);
+    return out.match(/.{4}/g).join('-');
+  }
+  async function sha(key) {
+    var n = String(key || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    var d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('eluh|' + n));
+    return Array.prototype.map.call(new Uint8Array(d), function (x) { return ('0' + x.toString(16)).slice(-2); }).join('');
+  }
+
   U.route(/^#\/(?:setup|pair)(?:\?.*)?$/, async function () {
     var s0 = await S.Settings.get();
     var urlCode = codeFrom(location.hash);
+    // QR mit der normalen Kamera-App am Master geöffnet → direkt zur Freigabe
+    if (s0.key && s0.isMaster && urlCode) { location.replace('#/sync'); setTimeout(function () { approve(urlCode); }, 300); return; }
     var revoked = !!s0.revoked && !s0.key;
     var iosBrowser = U.isIOS() && !standalone();
     U.view.innerHTML =
@@ -109,16 +124,17 @@
       '<img class="logo" src="logo.png" alt="eluh Anlagen Kyritz">' +
       '<h1 style="margin:0;font-size:22px">Gerät verbinden</h1>' +
       (revoked ? '<div class="notice err">Dieses Gerät wurde am Master-Gerät entfernt. Alle Daten auf diesem Gerät wurden gelöscht.</div>' : '') +
-      '<p class="muted" style="margin:0">Am Master-Gerät (Dominics Handy) unter <b>Sync → Geräte → „Gerät hinzufügen“</b> den QR-Code öffnen und hier scannen.</p>' +
+      '<p class="muted" style="margin:0">Dieses Gerät zeigt einen QR-Code. Dominic scannt ihn mit seinem Master-Handy (<b>Sync → Geräte → „Gerät freigeben“</b>) und gibt das Gerät frei.</p>' +
       (iosBrowser ? '<div class="notice warn small">iPhone/iPad: Bitte zuerst über <b>Teilen → „Zum Home-Bildschirm“</b> installieren und in der <b>installierten App</b> verbinden – Safari und die App haben getrennte Speicher.</div>' : '') +
-      '<button class="btn primary big" id="scanGo" type="button" style="width:100%">' + U.ICONS.camera + '<span>QR-Code scannen</span></button>' +
-      '<label class="field"><span>oder Kopplungscode eingeben</span><input class="key-input" id="codeIn" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX" value="' + esc(urlCode) + '"></label>' +
-      '<div class="btn-row"><button class="btn" id="codeGo" type="button">Weiter</button></div>' +
+      '<div id="reqBox"><button class="btn primary big" id="reqGo" type="button" style="width:100%">' + U.ICONS.camera + '<span>QR-Code anzeigen</span></button></div>' +
       '<div id="setupMsg"></div>' +
       '<details class="small" id="legacyBox"><summary>Mit bisherigem App-Schlüssel verbinden</summary><div class="stack" style="margin-top:10px">' +
       '<label class="field"><span>App-Schlüssel</span><input class="key-input" id="keyIn" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX-XXXX"></label>' +
       '<label class="field"><span>Dein Name (für Termine und Erinnerungen)</span><input id="nameIn" autocomplete="name" placeholder="z. B. Dominic oder Anja"></label>' +
       '<div class="btn-row"><button class="btn" id="keyGo" type="button">Verbinden</button></div></div></details>' +
+      '<details class="small"><summary>Notfall-Code (Handy verloren)</summary><div class="stack" style="margin-top:10px">' +
+      '<label class="field"><span>Notfall-Kopplungscode aus dem Apps-Script-Protokoll</span><input class="key-input" id="codeIn" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX"></label>' +
+      '<div class="btn-row"><button class="btn" id="codeGo" type="button">Als Master verbinden</button></div></div></details>' +
       '<div class="btn-row"><button class="btn ghost small" id="keySkip" type="button">Erstmal ohne Verbindung</button></div></div>';
     var m = /[#&?]k=([A-Za-z0-9-]+)/.exec(location.href);
     if (m) { $('#keyIn').value = m[1]; $('#legacyBox').open = true; }
@@ -126,52 +142,66 @@
     var mn = /[?&]n=([^&]+)/.exec(location.href);
     if (mn) $('#nameIn').value = decodeURIComponent(mn[1]);
     var msg = function (html) { $('#setupMsg').innerHTML = html; };
+    var timer = null, poll = null, gone = false;
+    function stopAll() { clearInterval(timer); clearTimeout(poll); }
+    U.onCleanup(function () { gone = true; stopAll(); });
 
-    $('#scanGo').onclick = async function () {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { U.toast('Kamera nicht verfügbar – bitte Code eingeben', true); $('#codeIn').focus(); return; }
-      var code = await scanQr();
-      if (code) { $('#codeIn').value = code; startPair(code); }
-    };
-    $('#codeGo').onclick = function () {
-      var code = codeFrom($('#codeIn').value);
-      if (!code) { U.toast('Bitte den 12-stelligen Code eingeben', true); return; }
-      startPair(code);
-    };
-    $('#codeIn').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('#codeGo').click(); });
-
-    async function startPair(code) {
-      msg('<div class="notice info"><span class="spinner"></span> Code wird geprüft…</div>');
-      var chk;
-      try { chk = await S.api('pairCheck', { code: code }, { noKey: true, timeout: 30000 }); }
-      catch (e) { msg('<div class="notice err">' + esc(e.message) + '</div>'); return; }
-      msg('');
-      var role, name;
-      if (chk.master) {
-        var ok = await U.confirmBox('Neues Master-Gerät', 'Dieses Gerät wird das neue Master-Gerät (Dominic). Das bisherige Master-Gerät bleibt als normales Gerät verbunden.', 'Master übernehmen');
-        if (!ok) return;
-        role = 'chef'; name = 'Dominic';
-      } else {
-        role = await U.choiceBox('Wessen Gerät ist das?', '<p class="muted" style="margin:0">Das bestimmt, was auf diesem Gerät zu sehen ist.</p>', [
-          { key: 'chef', label: 'Mein Gerät (Dominic) – voller Zugriff', cls: 'primary' },
-          { key: 'buero', label: 'Büro – Aufträge drucken/abrechnen, Termine, Kunden lesen' }
-        ]);
-        if (!role) return;
-        if (role === 'buero') {
-          name = await askName(s0.role === 'buero' ? s0.deviceName : '');
-          if (!name) return;
-        } else name = 'Dominic';
-      }
-      await finishPair(code, role, name);
-    }
-
-    async function finishPair(code, role, name) {
-      msg('<div class="notice info"><span class="spinner"></span> Gerät wird verbunden…</div>');
+    $('#reqGo').onclick = async function () {
+      if (!window.crypto || !crypto.subtle) { msg('<div class="notice err">Dieser Browser kann keine sicheren Schlüssel erzeugen (HTTPS nötig).</div>'); return; }
+      var btn = this; btn.disabled = true;
+      msg('<div class="notice info"><span class="spinner"></span> Anfrage wird erstellt…</div>');
+      var key = newKey(), j;
       try {
         var s = await S.Settings.get();
-        var j = await S.api('pairFinish', { code: code, role: role, name: name, label: S.deviceLabel(), deviceId: s.deviceId, oldKey: s.key || undefined }, { noKey: true, timeout: 30000 });
-        await connected(j.key, name);
+        j = await S.api('reqStart', { hash: await sha(key), oldHash: s.key ? await sha(s.key) : undefined, label: S.deviceLabel(), deviceId: s.deviceId }, { noKey: true, timeout: 30000 });
+      } catch (e) { btn.disabled = false; msg('<div class="notice err">' + esc(e.offline ? 'Nur mit Internet möglich.' : e.message) + '</div>'); return; }
+      msg('');
+      var svg = await qrSvg(pairUrl(j.code));
+      if (gone) return;
+      $('#reqBox').innerHTML =
+        '<div class="stack" style="text-align:center">' +
+        '<div class="small muted">Dominic: <b>Master-Handy → Sync → Geräte → „Gerät freigeben“</b> und diesen QR-Code scannen.</div>' +
+        '<div class="qr-wrap">' + svg + '</div>' +
+        '<div class="small muted">Prüfzahl – Dominic tippt sie am Handy ab:</div>' +
+        '<div class="pair-code" id="reqCheck" style="font-size:34px;letter-spacing:.25em">' + esc(j.check) + '</div>' +
+        '<div class="small muted">Ohne Kamera: Code am Master eintippen</div>' +
+        '<div class="pair-code" style="font-size:18px">' + esc(fmtCode(j.code)) + '</div>' +
+        '<div class="small muted" id="reqLeft"></div><div id="reqState"><div class="notice info small"><span class="spinner"></span> Warte auf Freigabe…</div></div></div>';
+      function left() {
+        var ms = j.exp - Date.now(), el = $('#reqLeft');
+        if (!el) { stopAll(); return; }
+        if (ms <= 0) { stopAll(); el.textContent = ''; $('#reqState').innerHTML = '<div class="notice err small">Abgelaufen.</div><div class="btn-row"><button class="btn" id="reqAgain" type="button">Neuen QR-Code anzeigen</button></div>'; $('#reqAgain').onclick = function () { window.ELUH_APP.router(); }; return; }
+        el.textContent = 'Gültig noch ' + Math.floor(ms / 60000) + ':' + String(Math.floor(ms / 1000) % 60).padStart(2, '0') + ' Min.';
+      }
+      left(); timer = setInterval(left, 1000);
+      async function check() {
+        if (gone) return;
+        try {
+          var st = await S.api('reqStatus', { code: j.code }, { noKey: true, timeout: 20000 });
+          if (st.status === 'ok') { stopAll(); $('#reqState').innerHTML = '<div class="notice ok small">✓ Freigegeben – verbinde…</div>'; await connected(key, st.name); return; }
+          if (st.status === 'no') { stopAll(); $('#reqState').innerHTML = '<div class="notice err small">Abgelehnt.</div><div class="btn-row"><button class="btn" id="reqAgain" type="button">Neu versuchen</button></div>'; $('#reqAgain').onclick = function () { window.ELUH_APP.router(); }; return; }
+        } catch (e) { if (/ungültig oder abgelaufen/.test(e.message)) { stopAll(); $('#reqState').innerHTML = '<div class="notice err small">Anfrage abgelaufen.</div>'; return; } }
+        if (Date.now() < j.exp) poll = setTimeout(check, 3000);
+      }
+      poll = setTimeout(check, 3000);
+    };
+
+    // Notfall: Kopplungscode aus masterNotfall() → dieses Gerät wird Master
+    $('#codeGo').onclick = async function () {
+      var code = codeFrom($('#codeIn').value);
+      if (!code) { U.toast('Bitte den 12-stelligen Code eingeben', true); return; }
+      msg('<div class="notice info"><span class="spinner"></span> Code wird geprüft…</div>');
+      try {
+        var chk = await S.api('pairCheck', { code: code }, { noKey: true, timeout: 30000 });
+        if (!chk.master) { msg('<div class="notice err">Das ist kein Notfall-Code.</div>'); return; }
+        msg('');
+        var ok = await U.confirmBox('Neues Master-Gerät', 'Dieses Gerät wird das Master-Gerät (Dominic).', 'Master übernehmen');
+        if (!ok) return;
+        var s = await S.Settings.get();
+        var j = await S.api('pairFinish', { code: code, label: S.deviceLabel(), deviceId: s.deviceId, oldKey: s.key || undefined }, { noKey: true, timeout: 30000 });
+        await connected(j.key, 'Dominic');
       } catch (e) { msg('<div class="notice err">' + esc(e.message) + '</div>'); }
-    }
+    };
 
     async function connected(key, name) {
       var pj = await S.api('ping', {}, { key: key, timeout: 30000 });
@@ -205,25 +235,74 @@
       await S.Settings.set({ skipSetup: true });
       location.hash = '#/auftraege';
     };
-    if (urlCode && !iosBrowser) startPair(urlCode);
   }, 'sync');
 
-  function askName(preset) {
+  // ------------------------------------------------------------------
+  // Master: Freigabe einer Anfrage (QR gescannt oder Code getippt)
+  // ------------------------------------------------------------------
+  function approve(code, onDone) {
+    return new Promise(async function (resolve) {
+      var info;
+      try { info = await S.api('reqInfo', { code: code }, { timeout: 20000 }); }
+      catch (e) { U.toast(e.offline ? 'Nur mit Internet möglich' : e.message, true); resolve(false); return; }
+      if (info.status !== 'wait') { U.toast('Diese Anfrage ist schon bearbeitet', true); resolve(false); return; }
+      var done = false;
+      var sheet = U.openModal(
+        '<div class="sheet-head"><h3>Gerät freigeben</h3><button class="btn small ghost" data-close aria-label="Schließen">' + U.ICONS.close + '</button></div>' +
+        '<div class="sheet-body stack">' +
+        '<div class="notice warn small">Nur freigeben, wenn du dieses Gerät gerade selbst oder dein Mitarbeiter vor dir einrichtet. Gerät: <b>' + esc(info.label || 'unbekannt') + '</b>' +
+        (info.replaces ? ' (war schon verbunden – alter Zugang wird ersetzt)' : '') + '</div>' +
+        '<label class="field"><span>Prüfzahl vom Bildschirm des neuen Geräts</span><input id="apCheck" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="4 Ziffern" style="font-size:22px;letter-spacing:.2em"></label>' +
+        '<div class="stack" id="apRole">' +
+        '<label><input type="radio" name="apRole" value="chef" checked> Mein Gerät (Dominic) – voller Zugriff</label>' +
+        '<label><input type="radio" name="apRole" value="buero"> Büro – Aufträge drucken/abrechnen, Termine, Kunden lesen</label>' +
+        '<label><input type="radio" name="apRole" value="master"> Neues Master-Gerät (dieses Handy wird normales Gerät)</label></div>' +
+        '<label class="field" id="apNameBox" style="display:none"><span>Name (erscheint bei Terminen und in der Geräteliste)</span><input id="apName" autocomplete="off" placeholder="z. B. Anja"></label>' +
+        '<div id="apErr"></div>' +
+        '<div class="btn-row" style="justify-content:flex-end"><button class="btn ghost" data-no type="button">Ablehnen</button><button class="btn primary" data-yes type="button">Freigeben</button></div></div>',
+        { onClose: function () { if (!done) { done = true; resolve(false); } } });
+      var err = function (t) { $('#apErr', sheet).innerHTML = t ? '<div class="notice err small">' + esc(t) + '</div>' : ''; };
+      function role() { return ($('input[name=apRole]:checked', sheet) || {}).value; }
+      $$('input[name=apRole]', sheet).forEach(function (r) { r.onchange = function () { $('#apNameBox', sheet).style.display = role() === 'buero' ? '' : 'none'; }; });
+      setTimeout(function () { $('#apCheck', sheet).focus(); }, 50);
+      $('[data-no]', sheet).onclick = async function () {
+        done = true; U.closeModal();
+        try { await S.api('reqDeny', { code: code }); U.toast('Abgelehnt'); } catch (e) { U.toast(e.message, true); }
+        resolve(false);
+      };
+      $('[data-yes]', sheet).onclick = async function () {
+        var r = role(), check = $('#apCheck', sheet).value.replace(/\D/g, ''), name = $('#apName', sheet).value.trim();
+        if (check.length !== 4) { err('Bitte die 4-stellige Prüfzahl eingeben.'); return; }
+        if (r === 'buero' && !name) { err('Bitte einen Namen für das Büro-Gerät eingeben.'); return; }
+        var btn = this; btn.disabled = true; err('');
+        try {
+          var j = await S.api('reqApprove', { code: code, check: check, asRole: r === 'master' ? 'chef' : r, master: r === 'master', name: r === 'chef' ? 'Dominic' : name }, { timeout: 30000 });
+          done = true; U.closeModal();
+          if (j.master) { await S.Settings.set({ isMaster: false }); U.toast('Freigegeben – das neue Gerät ist jetzt Master'); }
+          else U.toast('Freigegeben: ' + (j.name || '') + ' · ' + (j.label || ''));
+          if (onDone) onDone();
+          resolve(true);
+        } catch (e) {
+          btn.disabled = false;
+          err(e.message);
+          if (/gesperrt|schon bearbeitet|abgelaufen/.test(e.message)) { done = true; setTimeout(function () { U.closeModal(); resolve(false); }, 2500); }
+        }
+      };
+    });
+  }
+
+  function askText(title, label, placeholder, okLabel) {
     return new Promise(function (resolve) {
       var done = false;
       var sheet = U.openModal(
-        '<div class="sheet-head"><h3>Dein Name</h3></div><div class="sheet-body stack">' +
-        '<label class="field"><span>Name (erscheint bei Terminen und in der Geräteliste)</span><input id="nmIn" autocomplete="name" placeholder="z. B. Anja" value="' + esc(preset || '') + '"></label>' +
-        '<div class="btn-row" style="justify-content:flex-end"><button class="btn ghost" data-no>Abbrechen</button><button class="btn primary" data-yes>Verbinden</button></div></div>',
+        '<div class="sheet-head"><h3>' + esc(title) + '</h3></div><div class="sheet-body stack">' +
+        '<label class="field"><span>' + esc(label) + '</span><input class="key-input" id="txIn" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="' + esc(placeholder || '') + '"></label>' +
+        '<div class="btn-row" style="justify-content:flex-end"><button class="btn ghost" data-no>Abbrechen</button><button class="btn primary" data-yes>' + esc(okLabel || 'OK') + '</button></div></div>',
         { onClose: function () { if (!done) resolve(null); } });
-      var inp = $('#nmIn', sheet);
+      var inp = $('#txIn', sheet);
       setTimeout(function () { inp.focus(); }, 50);
       $('[data-no]', sheet).onclick = function () { done = true; U.closeModal(); resolve(null); };
-      $('[data-yes]', sheet).onclick = function () {
-        var v = inp.value.trim();
-        if (!v) { U.toast('Bitte einen Namen eingeben', true); return; }
-        done = true; U.closeModal(); resolve(v);
-      };
+      $('[data-yes]', sheet).onclick = function () { var v = inp.value.trim(); if (!v) return; done = true; U.closeModal(); resolve(v); };
       inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') $('[data-yes]', sheet).click(); });
     });
   }
@@ -238,8 +317,8 @@
     if (!document.body.contains(box)) return;
     if (!s.isMaster && !s.hasMaster && s.role === 'chef') {
       box.innerHTML =
-        '<div class="small"><b>Noch kein Master-Gerät.</b> Mach dein Handy zum Master: Es bekommt einen neuen, langen Schlüssel (48 Zeichen). Nur am Master fügst du neue Geräte per QR-Code hinzu (beim Scannen wählt man „Dominic“ oder „Büro“) und kannst Geräte jederzeit entfernen – ein entferntes Gerät löscht dann alle Daten.</div>' +
-        '<div class="small muted">Danach gilt dein bisheriger App-Schlüssel nicht mehr: iPad und Mac verbindest du einfach per QR-Code neu. Der alte Büro-Schlüssel funktioniert weiter, bis du ihn abschaltest.</div>' +
+        '<div class="small"><b>Noch kein Master-Gerät.</b> Mach dein Handy zum Master: Es bekommt einen neuen, langen Schlüssel (48 Zeichen). Nur am Master gibst du neue Geräte frei (das neue Gerät zeigt einen QR-Code, du scannst ihn mit dem Master-Handy und wählst „Dominic“ oder „Büro“) und kannst Geräte jederzeit entfernen – ein entferntes Gerät löscht dann alle Daten.</div>' +
+        '<div class="small muted">Danach gilt dein bisheriger App-Schlüssel nicht mehr: iPad und Mac verbindest du einfach neu: dort QR-Code anzeigen, am Master scannen. Der alte Büro-Schlüssel funktioniert weiter, bis du ihn abschaltest.</div>' +
         '<div class="btn-row"><button type="button" class="btn primary" id="mkMaster">Dieses Gerät zum Master machen</button></div>' +
         '<div class="hr"></div><div class="stack" id="legacyOffice"></div>';
       $('#mkMaster', box).onclick = async function () {
@@ -261,15 +340,22 @@
         '<dl class="kv"><dt>Dieses Gerät</dt><dd>' + esc(S.deviceLabel()) + ' · ' + esc(s.deviceName || 'Dominic') + '</dd></dl>';
       return;
     }
-    box.innerHTML = '<div class="small"><b>Dieses Gerät ist das Master-Gerät.</b> Neue Geräte verbindest du per QR-Code – beim Scannen wird gewählt, ob es dein Gerät oder ein Büro-Gerät ist.</div>' +
-      '<div class="btn-row"><button type="button" class="btn primary" id="devAdd">' + U.ICONS.plus + '<span>Gerät hinzufügen</span></button></div>' +
+    box.innerHTML = '<div class="small"><b>Dieses Gerät ist das Master-Gerät.</b> Neue Geräte zeigen einen QR-Code – du scannst ihn hier und gibst das Gerät frei (Dominic, Büro oder neues Master-Gerät).</div>' +
+      '<div class="btn-row"><button type="button" class="btn primary" id="devScan">' + U.ICONS.camera + '<span>Gerät freigeben (QR scannen)</span></button>' +
+      '<button type="button" class="btn" id="devCode">Code eintippen</button></div>' +
       '<div id="devList" class="list"><div class="empty"><span class="spinner"></span></div></div>' +
-      '<div id="devLegacy"></div>' +
-      '<details class="small"><summary>Master auf ein anderes Gerät übertragen</summary><div class="stack" style="margin-top:8px">' +
-      '<div class="muted">Z. B. bei einem neuen Handy: QR-Code am neuen Gerät scannen – es wird Master, dieses Gerät bleibt normal verbunden.</div>' +
-      '<div class="btn-row"><button type="button" class="btn" id="devMasterMove">QR-Code für neues Master-Gerät</button></div></div></details>';
-    $('#devAdd', box).onclick = function () { showPairCode(false, function () { drawList(); }); };
-    $('#devMasterMove', box).onclick = function () { showPairCode(true, function () { renderBox(box, legacyOfficeBox); }); };
+      '<div id="devLegacy"></div>';
+    $('#devScan', box).onclick = async function () {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { U.toast('Kamera nicht verfügbar – bitte Code eintippen', true); return; }
+      var code = await scanQr();
+      if (code) { var r = await approve(code, function () { drawList(); }); if (r) renderBox(box, legacyOfficeBox); }
+    };
+    $('#devCode', box).onclick = async function () {
+      var t = await askText('Code eintippen', 'Code vom Bildschirm des neuen Geräts', 'XXXX-XXXX-XXXX', 'Weiter');
+      var code = t && codeFrom(t);
+      if (t && !code) { U.toast('Bitte den 12-stelligen Code eingeben', true); return; }
+      if (code) { var r = await approve(code, function () { drawList(); }); if (r) renderBox(box, legacyOfficeBox); }
+    };
     async function drawList() {
       var list = $('#devList', box);
       if (!list) return;
@@ -297,77 +383,17 @@
       var lg = $('#devLegacy', box);
       if (lg) {
         lg.innerHTML = j.legacyOffice ?
-          '<div class="notice warn small">Der <b>alte Büro-Schlüssel</b> ist noch aktiv (Büro-Geräte, die noch nicht per QR-Code verbunden sind). Wenn alle Büro-Geräte neu verbunden sind, abschalten.' +
+          '<div class="notice warn small">Der <b>alte Büro-Schlüssel</b> ist noch aktiv (Büro-Geräte, die noch nicht neu verbunden sind). Wenn alle Büro-Geräte neu verbunden sind, abschalten.' +
           '<div class="btn-row" style="margin-top:8px"><button type="button" class="btn small danger" id="legacyOff">Alten Büro-Schlüssel abschalten</button></div></div>' : '';
         var lo = $('#legacyOff', lg);
         if (lo) lo.onclick = async function () {
-          var ok = await U.confirmBox('Alten Büro-Schlüssel abschalten?', 'Büro-Geräte, die noch mit dem alten Schlüssel arbeiten, haben danach keinen Zugriff mehr und müssen per QR-Code neu verbunden werden.', 'Abschalten', true);
+          var ok = await U.confirmBox('Alten Büro-Schlüssel abschalten?', 'Büro-Geräte, die noch mit dem alten Schlüssel arbeiten, haben danach keinen Zugriff mehr und müssen neu verbunden werden (QR-Code anzeigen, am Master freigeben).', 'Abschalten', true);
           if (!ok) return;
           try { await S.api('legacyOff', {}); U.toast('Alter Büro-Schlüssel abgeschaltet'); drawList(); } catch (e) { U.toast(e.message, true); }
         };
       }
     }
     drawList();
-  }
-
-  /** QR-Code + Kopplungscode anzeigen, bis ein Gerät ihn benutzt hat (oder 15 Min. vorbei sind) */
-  async function showPairCode(master, onDone) {
-    var j;
-    try { j = await S.api('pairStart', { master: !!master }); }
-    catch (e) { U.toast(e.offline ? 'Nur mit Internet möglich' : e.message, true); return; }
-    var started = Date.now() - 5000, timer = null, poll = null, closed = false;
-    var svg = await qrSvg(pairUrl(j.code));
-    var sheet = U.openModal(
-      '<div class="sheet-head"><h3>' + (master ? 'Neues Master-Gerät' : 'Gerät hinzufügen') + '</h3><button class="btn small ghost" data-close aria-label="Schließen">' + U.ICONS.close + '</button></div>' +
-      '<div class="sheet-body stack" style="text-align:center">' +
-      '<div class="small muted">' + (master ? 'Am neuen Handy die ELUH-App öffnen → „QR-Code scannen“.' : 'Am neuen Gerät die ELUH-App öffnen → „QR-Code scannen“. Danach wird gefragt: <b>Dominic</b> oder <b>Büro</b>.') + '</div>' +
-      '<div class="qr-wrap">' + svg + '</div>' +
-      '<div class="small muted">Ohne Kamera (z. B. Büro-PC): App-Adresse öffnen und diesen Code eingeben</div>' +
-      '<div class="pair-code">' + esc(fmtCode(j.code)) + '</div>' +
-      '<div class="small muted" id="pairLeft"></div>' +
-      '<div class="small" style="word-break:break-all"><a href="' + esc(appUrl()) + '">' + esc(appUrl()) + '</a></div>' +
-      '<div id="pairState"></div>' +
-      '<div class="btn-row" style="justify-content:center"><button type="button" class="btn small" id="pairCopy">Link kopieren</button></div></div>',
-      { onClose: function () { closed = true; clearInterval(timer); clearTimeout(poll); } });
-    $('#pairCopy', sheet).onclick = async function () {
-      try { await navigator.clipboard.writeText(pairUrl(j.code)); U.toast('Link kopiert (15 Min. gültig, nur einmal nutzbar)'); } catch (e) { U.toast('Kopieren nicht möglich', true); }
-    };
-    function left() {
-      var ms = j.exp - Date.now(), el = $('#pairLeft', sheet);
-      if (!el) return;
-      if (ms <= 0) { el.textContent = 'Abgelaufen – bitte neu öffnen.'; $('.qr-wrap', sheet).style.opacity = .15; clearInterval(timer); clearTimeout(poll); return; }
-      el.textContent = 'Gültig noch ' + Math.floor(ms / 60000) + ':' + String(Math.floor(ms / 1000) % 60).padStart(2, '0') + ' Min. · nur einmal nutzbar';
-    }
-    left();
-    timer = setInterval(left, 1000);
-    async function check() {
-      if (closed) return;
-      try {
-        var d = await S.api('devices', {}, { timeout: 15000 });
-        var fresh = d.devices.filter(function (x) { return x.created >= started && !x.self; })[0];
-        if (master) {
-          var me = d.devices.filter(function (x) { return x.self; })[0];
-          if (me && !me.master) fresh = d.devices.filter(function (x) { return x.master; })[0] || fresh;
-        }
-        if (fresh) {
-          clearInterval(timer);
-          $('#pairState', sheet).innerHTML = '<div class="notice ok">✓ Verbunden: ' + esc(fresh.name) + ' · ' + esc(fresh.label || '') + ' (' + (fresh.master ? 'neues Master-Gerät' : fresh.role === 'buero' ? 'Büro' : 'Dominic') + ')</div>';
-          $('.qr-wrap', sheet).style.opacity = .15;
-          if (master) await S.Settings.set({ isMaster: false });
-          if (onDone) onDone();
-          return;
-        }
-      } catch (e) {
-        if (master && /Master/.test(e.message)) {
-          await S.Settings.set({ isMaster: false });
-          $('#pairState', sheet).innerHTML = '<div class="notice ok">✓ Master wurde übertragen.</div>';
-          if (onDone) onDone();
-          return;
-        }
-      }
-      if (Date.now() < j.exp) poll = setTimeout(check, 3000);
-    }
-    poll = setTimeout(check, 3000);
   }
 
   // Entferntes Gerät → zur Einrichtung
@@ -377,5 +403,5 @@
     window.ELUH_APP.router();
   });
 
-  window.Geraete = { renderBox: renderBox, scanQr: scanQr, codeFrom: codeFrom };
+  window.Geraete = { renderBox: renderBox, scanQr: scanQr, codeFrom: codeFrom, approve: approve };
 })();

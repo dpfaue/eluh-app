@@ -1,5 +1,5 @@
 /* ELUH App – Service Worker: hält die App offline verfügbar und zeigt Push-Mitteilungen */
-var VERSION = 'eluh-v2.3.0';
+var VERSION = 'eluh-v2.3.1';
 var FILES = [
   './', 'index.html', 'app.css', 'app.js', 'store.js', 'pdfgen.js', 'offline.js', 'termine.js', 'buero.js', 'geraete.js', 'heute.js', 'config.js',
   'jsqr.min.js', 'qrcode.min.js',
