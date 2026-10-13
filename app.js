@@ -330,10 +330,23 @@
       toast('Gespeichert');
     };
     var b;
-    if ((b = $('#pushOn', box))) b.onclick = async function () {
+    if ((b = $('#pushOn', box))) b.onclick = function () {
+      var b = this; // eigene Variable: das äußere „b“ zeigt später auf andere Knöpfe (alter Fehler: Klick tat nichts)
+      // Erlaubnis SOFORT im Klick anfragen – das iPhone ignoriert die Abfrage sonst stillschweigend
+      var perm;
+      try { perm = Notification.requestPermission(); } catch (e) { perm = Promise.reject(e); }
       b.disabled = true;
-      try { await S.Push.enable(); toast('Mitteilungen eingeschaltet'); } catch (e) { toast(e.message, true); }
-      renderPushBox(box);
+      var info = $('#pushStep', box);
+      if (!info) { info = document.createElement('div'); info.id = 'pushStep'; info.className = 'small muted'; b.insertAdjacentElement('afterend', info); }
+      S.Push.enable(perm, function (t) { info.textContent = t; }).then(function () {
+        toast('Mitteilungen eingeschaltet');
+        renderPushBox(box);
+      }).catch(function (e) {
+        b.disabled = false;
+        info.className = 'notice warn small';
+        info.textContent = 'Hat nicht geklappt: ' + (e && e.message || e);
+        toast(e && e.message || 'Fehler', true);
+      });
     };
     if ((b = $('#pushOff', box))) b.onclick = async function () { await S.Push.disable(); renderPushBox(box); };
     if ((b = $('#pushTest', box))) b.onclick = async function () {

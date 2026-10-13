@@ -914,17 +914,30 @@
         return sub && Notification.permission === 'granted' ? 'on' : 'off';
       } catch (e) { return 'off'; }
     },
-    enable: async function () {
+    /** Einschalten in Schritten – jeder Schritt mit Zeitlimit und verständlicher Meldung.
+     *  permPromise: Notification.requestPermission() – muss DIREKT im Klick gestartet werden (iPhone verlangt das). */
+    enable: async function (permPromise, onStep) {
+      var step = function (t) { if (onStep) try { onStep(t); } catch (e) { /* */ } };
+      var limit = function (p, ms, msg) {
+        return Promise.race([p, new Promise(function (_, rej) { setTimeout(function () { rej(new Error(msg)); }, ms); })]);
+      };
+      step('Erlaubnis wird abgefragt…');
+      var perm = await limit(permPromise || Notification.requestPermission(), 60000, 'Keine Antwort auf die Erlaubnis-Abfrage');
+      if (perm !== 'granted') throw new Error(perm === 'denied' ? 'Mitteilungen sind blockiert – in den Einstellungen unter Mitteilungen → ELUH erlauben' : 'Mitteilungen wurden nicht erlaubt');
       var s = await Settings.get();
-      if (!s.vapidKey) await refreshPing();
-      s = await Settings.get();
-      var perm = await Notification.requestPermission();
-      if (perm !== 'granted') throw new Error('Mitteilungen wurden nicht erlaubt');
-      var reg = await navigator.serviceWorker.ready;
+      if (!s.vapidKey) { step('Server-Schlüssel wird geholt…'); await limit(refreshPing(), 30000, 'Server nicht erreichbar'); s = await Settings.get(); }
+      if (!s.vapidKey) throw new Error('Server-Schlüssel fehlt – bitte Internet prüfen');
+      step('Hintergrunddienst der App…');
+      var reg = await navigator.serviceWorker.getRegistration();
+      if (!reg) reg = await limit(navigator.serviceWorker.ready, 15000, 'Hintergrunddienst der App läuft nicht – App ganz schließen und neu öffnen');
+      step('Abo bei Apple/Google…');
       var sub = await reg.pushManager.getSubscription();
       if (sub && !subKeyOk(sub, s.vapidKey)) { try { await sub.unsubscribe(); } catch (e) { /* */ } sub = null; } // altes Abo mit anderem Server-Schlüssel
-      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(s.vapidKey) });
-      await api('pushSubscribe', { deviceId: s.deviceId, name: s.deviceName || '', subscription: sub.toJSON() });
+      if (!sub) sub = await limit(reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(s.vapidKey) }), 30000, 'Apple/Google hat das Abo nicht bestätigt – bitte nochmal versuchen');
+      step('Beim Server anmelden…');
+      var j = await limit(api('pushSubscribe', { deviceId: s.deviceId, name: s.deviceName || '', subscription: sub.toJSON() }), 45000, 'Server nicht erreichbar');
+      await Settings.set({ pushServer: { at: Date.now(), hasSub: !!j.hasSub, keyOk: true, last: j.last || null } });
+      if (!j.hasSub) throw new Error('Server hat das Abo nicht gespeichert');
       return true;
     },
     disable: async function () {
