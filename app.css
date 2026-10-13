@@ -370,3 +370,9 @@ body.role-buero .chef-only { display: none !important; }
 }
 
 .linkbtn { background: none; border: 0; padding: 4px 0; color: var(--ink-3); text-decoration: underline; cursor: pointer; font: inherit; }
+
+/* ---------- Nachfolgeaufträge ---------- */
+.bottombar a.bb-hide { display: none !important; }
+.nf-notice { margin: 10px 0 14px; }
+.nf-notice ul { margin: 6px 0 0; padding-left: 18px; }
+.nf-notice li { margin: 3px 0; }

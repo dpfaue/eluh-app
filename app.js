@@ -350,7 +350,7 @@
   var routes = [];
   function route(re, fn, tab) { routes.push({ re: re, fn: fn, tab: tab }); }
 
-  var CHEF_ONLY = /^#\/(auftraege|auftrag\/|sync|stunden)/;
+  var CHEF_ONLY = /^#\/(auftraege|auftrag\/|sync|stunden|nachfolge)/;
   async function router() {
     var s = await S.Settings.get();
     var isBuero = s.role === 'buero';
@@ -599,7 +599,7 @@
     view.innerHTML =
       '<div class="page-head"><a class="btn ghost small" href="#/auftraege">‹ Übersicht</a>' +
       '<h1 id="edTitle">' + esc(auftragTitle(rec)) + '</h1><span id="saveState" class="small muted"></span></div>' +
-      '<div id="statusBox"></div>' +
+      '<div id="statusBox"></div><div id="nfBox"></div>' +
       '<div class="card" style="margin-top:12px">' +
       '<section class="form-section"><h3>Arbeitsauftrag</h3><div class="grid2">' +
       input('auftrags_nr', 'Auftrags-Nr.') + input('datum_annahme', 'Datum der Annahme', { type: 'date' }) + '</div></section>' +
@@ -912,8 +912,10 @@
       if (!extra) return;
       var shared = rec.office && rec.office.shared;
       extra.innerHTML = (rec.status === 'fertig' ? '<button class="btn ghost small" id="shareTog">' + (shared ? 'Freigabe fürs Büro zurückziehen' : 'Ans Büro schicken') + '</button>' : '') +
+        '<button class="btn ghost small" id="nfMakeFrom">Nachfolgeauftrag anlegen</button>' +
         '<button class="btn ghost small" id="dup">Als neuen Auftrag kopieren</button>' +
         '<button class="btn ghost danger small" id="del">Auftrag löschen</button>';
+      $('#nfMakeFrom').onclick = async function () { if (pendingSave) await persist(); window.Nachfolge.fromAuftrag(rec); };
       var stg = $('#shareTog');
       if (stg) stg.onclick = async function () {
         rec.office = Object.assign({}, rec.office || {});
@@ -1112,6 +1114,17 @@
         };
       });
     }
+
+    // offene Nachfolgeaufträge bei diesem Kunden (Erinnerung vor Ort)
+    async function drawNf() {
+      var box = $('#nfBox');
+      if (!box || !window.Nachfolge) return;
+      var list = rec.customerId ? await window.Nachfolge.openFor(function (n) { return n.customerId === rec.customerId; }) : [];
+      if (!$('#nfBox')) return;
+      box.innerHTML = window.Nachfolge.noticeHtml(list, 'Noch offen bei diesem Kunden:') +
+        (rec.nachfolgeId ? '<div class="small muted" style="margin-top:6px">Angelegt aus <a href="#/nachfolge/' + esc(rec.nachfolgeId) + '">Nachfolgeauftrag</a></div>' : '');
+    }
+    drawNf();
 
     drawCustomer();
     drawRows();
@@ -1373,6 +1386,10 @@
         auftraege = (await S.Auftraege.all()).filter(function (a) { return a.customerId === folderId; })
           .sort(function (a, b) { return auftragDate(b).localeCompare(auftragDate(a)); });
       }
+      var nfHtml = '';
+      if (isCustomer && s.role !== 'buero' && window.Nachfolge) {
+        nfHtml = window.Nachfolge.noticeHtml(await window.Nachfolge.openFor(function (n) { return n.customerId === folderId; }), 'Noch offen (Nachfolgeaufträge):');
+      }
       var custOffline = customer && off.has(customer.id);
       var allOffline = s.offlineMode === 'alles';
       var ro = s.role === 'buero';
@@ -1385,12 +1402,14 @@
         '<div class="btn-row" style="margin-bottom:14px">' +
         (customer && !ro ? '<a class="btn primary" href="#/auftrag/neu?kunde=' + encodeURIComponent(customer.id) + '">' + ICONS.plus + '<span>Arbeitsauftrag</span></a>' : '') +
         (customer ? '<a class="btn" href="#/termine/neu?kunde=' + encodeURIComponent(customer.id) + '">' + ICONS.plus + '<span>Termin</span></a>' : '') +
+        (customer && !ro ? '<button type="button" class="btn" id="nfNewCust">' + ICONS.plus + '<span>Nachfolgeauftrag</span></button>' : '') +
         (ro ? '' : '<label class="btn">' + ICONS.camera + '<span>Foto aufnehmen</span><input type="file" accept="image/*" capture="environment" id="cam" hidden></label>' +
         '<label class="btn">' + ICONS.upload + '<span>Hochladen</span><input type="file" id="upl" multiple hidden></label>' +
         '<button class="btn" id="mkdir">Neuer Ordner</button>') +
         (customer && !allOffline && !ro ? '<button class="btn' + (custOffline ? ' primary' : '') + '" id="offTog">' + (custOffline ? '✓ Offline verfügbar' : 'Offline verfügbar machen') + '</button>' : '') +
         (folder.local ? '' : '<a class="btn ghost" target="_blank" rel="noopener" href="https://drive.google.com/drive/folders/' + esc(folder.id) + '">In Drive öffnen</a>') +
         '</div>' +
+        nfHtml +
         (auftraege.length ? '<h2>Arbeitsaufträge aus der App</h2><div class="list">' + auftraege.map(function (a) {
           return '<a class="row" href="#/auftrag/' + a.id + '"><span class="ico pdf">' + ICONS.pdf + '</span><span class="main"><span class="title" style="display:block">' +
             esc((a.f.art || 'Arbeitsauftrag') + (a.f.auftrags_nr ? ' · Nr. ' + a.f.auftrags_nr : '')) + '</span><span class="meta" style="display:block">' + isoToDe(auftragDate(a)) +
@@ -1420,6 +1439,8 @@
       }
       showThumbs(folderId);
       if (ro) return;
+      var nfb = $('#nfNewCust');
+      if (nfb) nfb.onclick = function () { window.Nachfolge.create({ customerId: customer.id, customerName: customer.name }); };
       $('#cam').onchange = function () { up(this.files, true); this.value = ''; };
       $('#upl').onchange = function () { up(this.files, false); this.value = ''; };
       $('#mkdir').onclick = function () {
@@ -1752,6 +1773,6 @@
     debounce: debounce, matchQuery: matchQuery, auftragTitle: auftragTitle, auftragDate: auftragDate, officeStatus: officeStatus,
     auftragStatus: auftragStatus, showAuftragPdf: showAuftragPdf, openCustomerPicker: openCustomerPicker, parseCustomer: parseCustomer, rerenderOn: rerenderOn,
     onCleanup: onCleanup, current: function () { return current; }, renderPushBox: renderPushBox, isIOS: isIOS, fileIcon: fileIcon,
-    openViewer: openViewer, printBlob: printBlob, downloadBlob: downloadBlob, inputBox: inputBox
+    openViewer: openViewer, printBlob: printBlob, downloadBlob: downloadBlob, inputBox: inputBox, applyCustomer: applyCustomer
   };
 })();

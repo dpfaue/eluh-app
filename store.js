@@ -267,7 +267,7 @@
   var Auftraege = {
     all: async function () {
       var list = await DB.all('auftraege');
-      return list.filter(function (a) { return !a.deleted && a.kind !== 'profile'; });
+      return list.filter(function (a) { return !a.deleted && a.kind !== 'profile' && a.kind !== 'nachfolge'; });
     },
     get: function (id) { return DB.get('auftraege', id); },
     save: async function (rec) {
@@ -727,6 +727,28 @@
   }
   function hasSig(sg) { return !!(sg && sg.png && !sg.removed); }
 
+  // ------------------------------------------------------------------
+  // Nachfolgeaufträge (nur Dominic): „bei Kunde X noch zu erledigen“ – laufen im Auftrags-Abgleich mit
+  // ------------------------------------------------------------------
+  var Nachfolge = {
+    all: async function () {
+      var list = await DB.all('auftraege');
+      return list.filter(function (a) { return a.kind === 'nachfolge' && !a.deleted; });
+    },
+    create: function (preset) {
+      return Object.assign({ id: uid('n-'), kind: 'nachfolge', createdAt: Date.now(), updatedAt: Date.now(), status: 'offen',
+        customerId: null, customerName: '', title: '', text: '', fromAuftragId: null, fromLabel: '', auftragId: null }, preset || {});
+    },
+    save: function (n) { return Auftraege.save(n); },
+    /** erledigt = von Hand abgehakt oder der daraus angelegte Arbeitsauftrag ist abgelegt */
+    isDone: async function (n) {
+      if (n.status === 'erledigt') return true;
+      if (!n.auftragId) return false;
+      var a = await DB.get('auftraege', n.auftragId);
+      return !!(a && !a.deleted && a.status === 'fertig');
+    }
+  };
+
   async function syncAuftraege() {
     var list = await DB.all('auftraege');
     var dirty = list.filter(function (a) { return a._dirty; });
@@ -943,7 +965,7 @@
     addAuftragPhoto: addAuftragPhoto, removeAuftragPhoto: removeAuftragPhoto, Profile: Profile, Thumbs: Thumbs,
     loadPdfJs: loadPdfJs, shrinkImage: shrinkImage,
     Termine: Termine, Office: Office, Push: Push, refreshPing: refreshPing,
-    mergeSig: mergeSig, hasSig: hasSig,
+    mergeSig: mergeSig, hasSig: hasSig, Nachfolge: Nachfolge,
     on: Sync.on, emit: emit, uid: uid, isoDate: isoDate, base64ToBlob: base64ToBlob, blobToBase64: blobToBase64
   };
 })();
