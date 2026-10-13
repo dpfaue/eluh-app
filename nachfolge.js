@@ -73,8 +73,11 @@
       '<div class="small muted" id="nfSave"></div></section>' +
       '<div class="btn-row" id="nfAct" style="margin-top:14px"></div>' +
       '<div class="btn-row" style="margin-top:18px"><button type="button" class="btn ghost danger small" id="nfDel">Löschen</button></div>';
+    var me = U.current();
     var idx = await S.Index.load();
+    if (U.current() !== me || !$('#nfTitle')) return; // Seite inzwischen gewechselt
     function drawCust() {
+      if (!$('#nfCust')) return;
       var c = n.customerId ? S.Index.item(idx, n.customerId) : null;
       $('#nfCust').innerHTML = (n.customerId ? '<a href="#/ordner/' + encodeURIComponent(n.customerId) + '"><b>' + esc((c && c.name || n.customerName || '').trim()) + '</b></a>' : '<b>Kein Kunde</b>') +
         ' <button type="button" class="btn small ghost" id="nfCustChg">' + (n.customerId ? 'Ändern' : 'Kunde wählen') + '</button>';

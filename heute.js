@@ -57,6 +57,7 @@
         if (os && os.key === 'printed') gedruckt++;
       }
       offen.sort(function (a, b) { return U.auftragDate(b.r).localeCompare(U.auftragDate(a.r)) || b.r.updatedAt - a.r.updatedAt; });
+      if (U.current() !== me || !$('#hA')) return; // Seite inzwischen gewechselt
       $('#hA').innerHTML =
         '<h2>Offene Aufträge' + (offen.length ? ' <span class="badge warn">' + offen.length + '</span>' : '') + '</h2>' +
         '<div class="list">' + (offen.slice(0, 12).map(function (x) {

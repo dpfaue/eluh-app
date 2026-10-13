@@ -989,7 +989,9 @@
       });
       var names = {};
       (await S.Auftraege.all()).forEach(function (a) { (a.zeiten || []).forEach(function (z) { if (z.monteur) names[z.monteur] = 1; }); });
-      $('#monteure').innerHTML = Object.keys(names).map(function (n) { return '<option value="' + esc(n) + '">'; }).join('');
+      var dl = $('#monteure');
+      if (!dl) return; // Seite inzwischen verlassen
+      dl.innerHTML = Object.keys(names).map(function (n) { return '<option value="' + esc(n) + '">'; }).join('');
       zeitSum();
     }
     function zeitSum() {
@@ -1726,12 +1728,27 @@
 
   // Service Worker (Offline + Updates)
   if ('serviceWorker' in navigator && window.isSecureContext) {
+    var waitingWorker = null;
+    // Update automatisch einspielen, sobald gerade nichts eingegeben/unterschrieben wird (Eingaben sind dann längst gespeichert)
+    function safeToUpdate() {
+      if (!modal.hidden) return false;
+      var a = document.activeElement;
+      if (a && a.matches && a.matches('input,textarea,select')) return false;
+      return true;
+    }
+    function tryAutoUpdate() {
+      if (waitingWorker && safeToUpdate()) { var w = waitingWorker; waitingWorker = null; w.postMessage('skipWaiting'); }
+    }
     navigator.serviceWorker.register('sw.js').then(function (reg) {
       function offer(w) {
+        waitingWorker = w;
         var bar = document.getElementById('updateBar');
         bar.hidden = false;
-        document.getElementById('updateBtn').onclick = function () { w.postMessage('skipWaiting'); };
+        document.getElementById('updateBtn').onclick = function () { waitingWorker = null; w.postMessage('skipWaiting'); };
+        setTimeout(tryAutoUpdate, 1500);
       }
+      window.addEventListener('hashchange', function () { setTimeout(tryAutoUpdate, 800); });
+      document.addEventListener('focusout', function () { setTimeout(tryAutoUpdate, 2000); });
       if (reg.waiting && navigator.serviceWorker.controller) offer(reg.waiting);
       reg.addEventListener('updatefound', function () {
         var w = reg.installing;
@@ -1740,7 +1757,10 @@
         });
       });
       setInterval(function () { reg.update().catch(function () {}); }, 30 * 60 * 1000);
-      document.addEventListener('visibilitychange', function () { if (!document.hidden) reg.update().catch(function () {}); });
+      document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) { tryAutoUpdate(); reg.update().catch(function () {}); }
+      });
+      reg.update().catch(function () {}); // beim Start gleich nach neuer Version sehen
     }).catch(function () {});
     var reloading = false;
     var hadController = !!navigator.serviceWorker.controller;
