@@ -67,7 +67,7 @@
         html += '<a class="row" href="#/termine/' + esc(t.id) + '"' + (past ? ' style="opacity:.6"' : '') + '>' +
           '<span class="t-time">' + (t.allDay || !t.time ? 'ganzt.' : esc(t.time) + (t.end ? '<small>–' + esc(t.end) + '</small>' : '')) + '</span>' +
           '<span class="main"><span class="title" style="display:block">' + esc(t.title || 'Termin') + '</span>' +
-          '<span class="meta" style="display:block">' + esc([t.customerName || t.address, t.person ? 'für ' + t.person : ''].filter(Boolean).join(' · ') || remindText(t)) + '</span></span>' +
+          '<span class="meta" style="display:block">' + esc([(t.customerName && window.Names.parseCustomer(t.customerName).label) || t.address, t.person ? 'für ' + t.person : ''].filter(Boolean).join(' · ') || remindText(t)) + '</span></span>' +
           (t._dirty ? '<span class="badge warn">wartet</span>' : '') + U.ICONS.chev + '</a>';
       });
       html += '</div>';

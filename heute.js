@@ -12,7 +12,7 @@
     return '<a class="row" href="#/termine/' + esc(t.id) + '"' + (past ? ' style="opacity:.55"' : '') + '>' +
       '<span class="t-time">' + (t.allDay || !t.time ? 'ganzt.' : esc(t.time) + (t.end ? '<small>–' + esc(t.end) + '</small>' : '')) + '</span>' +
       '<span class="main"><span class="title" style="display:block">' + esc(t.title || 'Termin') + '</span>' +
-      '<span class="meta" style="display:block">' + esc([t.customerName || t.address, t.person ? 'für ' + t.person : ''].filter(Boolean).join(' · ') || ' ') + '</span></span>' +
+      '<span class="meta" style="display:block">' + esc([(t.customerName && window.Names.parseCustomer(t.customerName).label) || t.address, t.person ? 'für ' + t.person : ''].filter(Boolean).join(' · ') || ' ') + '</span></span>' +
       U.ICONS.chev + '</a>';
   }
 
@@ -26,8 +26,17 @@
       (isBuero ? '<a class="btn" href="#/buero">' + U.ICONS.print + '<span>Aufträge</span></a>' :
         '<a class="btn primary" href="#/auftrag/neu">' + U.ICONS.plus + '<span>Neuer Auftrag</span></a>') +
       '<a class="btn" href="#/termine/neu">' + U.ICONS.plus + '<span>Neuer Termin</span></a></div>' +
-      (isBuero ? '' : '<div id="hS"></div>') + '<div id="hT"></div><div id="hA"></div>';
+      '<div id="hP"></div>' + (isBuero ? '' : '<div id="hS"></div>') + '<div id="hT"></div><div id="hA"></div>';
     var me = U.current();
+    // Hinweis, wenn auf diesem Gerät keine Mitteilungen ankommen können
+    (async function () {
+      var st = await S.Push.status(), ps = (await S.Settings.get()).pushServer;
+      var bad = st === 'off' || st === 'denied' || (st === 'on' && ps && (ps.hasSub === false || ps.keyOk === false || (ps.last && ps.last.code >= 300)));
+      var el = $('#hP');
+      if (!bad || !el || U.current() !== me) return;
+      el.innerHTML = '<a class="notice warn small" style="display:block;margin-bottom:12px" href="#/sync">' +
+        (st === 'denied' ? 'Mitteilungen sind für diese App blockiert – Termin-Erinnerungen kommen nicht an.' : 'Mitteilungen sind auf diesem Gerät nicht aktiv – Termin-Erinnerungen kommen nicht an.') + ' <b>Jetzt einrichten ›</b></a>';
+    })().catch(function () {});
 
     async function draw() {
       if (U.current() !== me || !$('#hT')) return;

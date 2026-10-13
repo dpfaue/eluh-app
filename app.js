@@ -28,10 +28,8 @@
     var t = norm(text);
     return norm(q).split(/\s+/).filter(Boolean).every(function (w) { return t.indexOf(w) >= 0; });
   }
-  function parseCustomer(folderName) {
-    var parts = String(folderName || '').split(',').map(function (p) { return p.trim(); }).filter(Boolean);
-    return { name: parts[0] || '', address: parts.slice(1).join(', '), ort: parts.length > 1 ? parts[parts.length - 1] : '' };
-  }
+  /** Ordnername → Nachname, Adresse ohne Vorname, Ort (siehe names.js) */
+  function parseCustomer(folderName) { return window.Names.parseCustomer(folderName); }
   function isIOS() {
     return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   }
@@ -321,7 +319,7 @@
     } else if (st === 'denied') {
       html += '<div class="notice warn">Mitteilungen sind für diese App blockiert. In den Geräte-Einstellungen (Mitteilungen → ELUH) wieder erlauben.</div>';
     } else if (st === 'on') {
-      html += '<div class="notice ok">Mitteilungen sind auf diesem Gerät eingeschaltet.</div><div class="btn-row"><button type="button" class="btn small" id="pushTest">Test-Mitteilung senden</button><button type="button" class="btn small ghost" id="pushOff">Ausschalten</button></div>';
+      html += '<div class="notice ok" id="pushState">Mitteilungen sind auf diesem Gerät eingeschaltet.</div><div class="btn-row"><button type="button" class="btn small" id="pushTest">Test-Mitteilung senden</button><button type="button" class="btn small ghost" id="pushOff">Ausschalten</button></div>';
     } else {
       html += '<button type="button" class="btn primary" id="pushOn">Mitteilungen einschalten</button>';
     }
@@ -339,8 +337,27 @@
     };
     if ((b = $('#pushOff', box))) b.onclick = async function () { await S.Push.disable(); renderPushBox(box); };
     if ((b = $('#pushTest', box))) b.onclick = async function () {
-      try { await S.Push.test(); toast('Test gesendet – kommt in wenigen Sekunden'); } catch (e) { toast(e.message, true); }
+      var btn = this; btn.disabled = true;
+      try {
+        var j = await S.Push.test();
+        if (j.sent) toast('Test gesendet – kommt in wenigen Sekunden');
+        else if (!j.hasSub) toast('Server kennt dieses Gerät nicht – bitte „Ausschalten“ und wieder einschalten', true);
+        else toast('Versand fehlgeschlagen' + (j.last && j.last.code ? ' (Code ' + j.last.code + ')' : ''), true);
+        renderPushBox(box);
+      } catch (e) { toast(e.message, true); }
+      finally { btn.disabled = false; }
     };
+    // Abgleich mit dem Server: ist das Abo dort wirklich hinterlegt?
+    if (st === 'on' && navigator.onLine) {
+      try {
+        var r = await S.Push.register();
+        var ps = $('#pushState', box);
+        if (ps && r.keyOk === false) { ps.className = 'notice warn'; ps.textContent = 'Das Mitteilungs-Abo stammt noch von einer älteren Server-Version. Bitte einmal „Ausschalten“ und wieder „Mitteilungen einschalten“.'; }
+        else if (ps && !r.hasSub) { ps.className = 'notice warn'; ps.textContent = 'Auf dem Gerät eingeschaltet, aber der Server kennt das Abo nicht. Bitte „Ausschalten“ und neu einschalten.'; }
+        else if (ps && r.last && r.last.code >= 300) { ps.className = 'notice warn'; ps.textContent = 'Eingeschaltet – aber die letzte Mitteilung wurde vom Push-Dienst abgelehnt (Code ' + r.last.code + '). Bitte „Ausschalten“ und neu einschalten.'; }
+        else if (ps && r.last && r.last.code) ps.textContent = 'Mitteilungen sind eingeschaltet ✓ · zuletzt zugestellt ' + fmtDT(r.last.at);
+      } catch (e) { /* offline */ }
+    }
   }
 
   // ------------------------------------------------------------------
@@ -1780,10 +1797,41 @@
     await router();
     var s = await S.Settings.get();
     if (s.key && navigator.onLine && (!s.role || !s.vapidKey)) {
-      try { await S.refreshPing(); S.Push.register().catch(function () {}); router(); } catch (e) { /* später */ }
+      try { await S.refreshPing(); router(); } catch (e) { /* später */ }
     }
+    // bei jedem Start beim Server melden (inkl. Push-Abo) – höchstens alle 30 Minuten
+    if (s.key && navigator.onLine && (!s.pushServer || Date.now() - (s.pushServer.at || 0) > 30 * 60 * 1000)) S.Push.register().catch(function () {});
     S.Sync.run();
+    migrateNames().catch(function () {});
   });
+
+  /** Einmalig (ab 2.6.0): Vornamen aus offenen Aufträgen und Terminen entfernen.
+   *  Nur Felder, die noch genau den alten automatisch eingesetzten Wert haben; nichts Abgeschlossenes/Unterschriebenes. */
+  async function migrateNames() {
+    var s = await S.Settings.get();
+    if (!s.key || s.namesMig1) return;
+    var N = window.Names, n = 0;
+    if (s.role !== 'buero') {
+      var list = await S.Auftraege.all();
+      for (var i = 0; i < list.length; i++) {
+        var r = list[i];
+        if (!r.customerName || r.status === 'fertig' || (r.sig && S.hasSig(r.sig.kunde)) || !r.f) continue;
+        var o = N.parseCustomerOld(r.customerName), p = N.parseCustomer(r.customerName), ch = false;
+        if (r.f.kunde_adresse === o.address && o.address !== p.address) { r.f.kunde_adresse = p.address; ch = true; }
+        if (r.f.kunde_name === o.name && o.name !== p.name && p.name) { r.f.kunde_name = p.name; ch = true; }
+        if (ch) { await S.Auftraege.save(r); n++; }
+      }
+    }
+    var ts = await S.Termine.all();
+    for (var j = 0; j < ts.length; j++) {
+      var t = ts[j];
+      if (!t.customerName) continue;
+      var to = N.parseCustomerOld(t.customerName), tp = N.parseCustomer(t.customerName);
+      if (t.address === to.address && to.address !== tp.address) { t.address = tp.address; await S.Termine.save(t); n++; }
+    }
+    await S.Settings.set({ namesMig1: Date.now() });
+    if (n) console.log('Vornamen bereinigt:', n);
+  }
 
   window.ELUH_APP = { router: router, toast: toast };
   // Hilfsfunktionen für die Zusatzmodule (Büro, Termine)

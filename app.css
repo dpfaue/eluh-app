@@ -376,3 +376,16 @@ body.role-buero .chef-only { display: none !important; }
 .nf-notice { margin: 10px 0 14px; }
 .nf-notice ul { margin: 6px 0 0; padding-left: 18px; }
 .nf-notice li { margin: 3px 0; }
+
+/* 2.6.0 – Stundenzettel-Prüfung und Kunden-Übernahme */
+.sz-check { margin-bottom: 12px; }
+.sz-check ul { margin: 6px 0 0; padding-left: 18px; }
+.sz-check li { margin: 2px 0; }
+.sz-check details { margin-top: 6px; }
+.sz-check summary { cursor: pointer; }
+.sz-i-err b { color: var(--red-ink); }
+.sz-table tr.sz-bad td { background: var(--warn-soft); }
+.sz-l-row.sz-bad { background: var(--warn-soft); border-radius: 6px; }
+.sz-fill .row { gap: 10px; align-items: center; cursor: pointer; }
+.sz-fill input[type=checkbox] { width: 20px; height: 20px; flex: none; }
+.sz-fill { max-height: 55vh; overflow: auto; }

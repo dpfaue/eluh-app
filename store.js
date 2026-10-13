@@ -891,6 +891,17 @@
     for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
     return out;
   }
+  /** Gehört das Abo zum aktuellen Server-Schlüssel? (nach einem Backend-Wechsel nicht mehr) */
+  function subKeyOk(sub, vapid) {
+    try {
+      var k = sub && sub.options && sub.options.applicationServerKey;
+      if (!k || !vapid) return true;
+      var a = new Uint8Array(k), b = b64ToBytes(vapid);
+      if (a.length !== b.length) return false;
+      for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+      return true;
+    } catch (e) { return true; }
+  }
   var Push = {
     supported: function () { return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window; },
     standalone: function () { return window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; },
@@ -911,6 +922,7 @@
       if (perm !== 'granted') throw new Error('Mitteilungen wurden nicht erlaubt');
       var reg = await navigator.serviceWorker.ready;
       var sub = await reg.pushManager.getSubscription();
+      if (sub && !subKeyOk(sub, s.vapidKey)) { try { await sub.unsubscribe(); } catch (e) { /* */ } sub = null; } // altes Abo mit anderem Server-Schlüssel
       if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(s.vapidKey) });
       await api('pushSubscribe', { deviceId: s.deviceId, name: s.deviceName || '', subscription: sub.toJSON() });
       return true;
@@ -920,11 +932,33 @@
       try { var reg = await navigator.serviceWorker.getRegistration(); var sub = reg && await reg.pushManager.getSubscription(); if (sub) await sub.unsubscribe(); } catch (e) { /* */ }
       await api('pushSubscribe', { deviceId: s.deviceId, name: s.deviceName || '', subscription: null });
     },
-    test: async function () { var s = await Settings.get(); return api('pushTest', { deviceId: s.deviceId }); },
-    register: async function () {
-      // Gerät (Name/Rolle) auch ohne Push bekannt machen, damit Erinnerungen zugeordnet werden können
+    test: async function () {
       var s = await Settings.get();
-      return api('pushSubscribe', { deviceId: s.deviceId, name: s.deviceName || '' });
+      var j = await api('pushTest', { deviceId: s.deviceId });
+      if (!j.hasSub) { // Server kennt das Abo nicht (mehr) – neu melden und noch einmal versuchen
+        var r = await Push.register();
+        if (r && r.hasSub) j = await api('pushTest', { deviceId: s.deviceId });
+      }
+      return j;
+    },
+    /** Lokales Push-Abo dieses Geräts (falls eingeschaltet), sonst null */
+    localSub: async function () {
+      if (!Push.supported() || Notification.permission !== 'granted') return null;
+      try { var reg = await navigator.serviceWorker.getRegistration(); var sub = reg && await reg.pushManager.getSubscription(); return sub || null; }
+      catch (e) { return null; }
+    },
+    register: async function () {
+      // Gerät (Name/Rolle) bekannt machen – und ein vorhandenes Abo immer mitschicken,
+      // damit der Server es nach Neuanlage/Verlust von push.json wieder hat (Selbstheilung)
+      var s = await Settings.get();
+      var payload = { deviceId: s.deviceId, name: s.deviceName || '' };
+      var sub = await Push.localSub();
+      var keyOk = !sub || subKeyOk(sub, s.vapidKey);
+      if (sub && keyOk) payload.subscription = sub.toJSON();
+      var j = await api('pushSubscribe', payload);
+      j.keyOk = keyOk;
+      await Settings.set({ pushServer: { at: Date.now(), hasSub: !!j.hasSub, keyOk: keyOk, last: j.last || null } });
+      return j;
     }
   };
 

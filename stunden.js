@@ -142,6 +142,85 @@
   }, 'stunden');
 
   // ------------------------------------------------------------------
+  // Plausibilitätsprüfung (nur lesend – geändert wird im Sheet)
+  // ------------------------------------------------------------------
+  function parseTime(t) {
+    var m = String(t || '').trim().match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+    if (!m) return null;
+    var h = Number(m[1]), mi = Number(m[2]);
+    return h < 25 && mi < 60 ? h * 60 + mi : null;
+  }
+  function pauseH(p) { p = String(p || '').trim(); if (!p || p === '-' || p === '–') return 0; var n = parseFloat(p.replace(',', '.')); return isNaN(n) ? null : n; }
+  function dayKey(d) { var m = String(d || '').match(/(\d{1,2})\.(\d{1,2})/); return m ? Number(m[1]) + '.' + Number(m[2]) : ''; }
+  function fmtT(min) { return Math.floor(min / 60) + ':' + ('0' + (min % 60)).slice(-2); }
+
+  /** Datenzeilen des Zettels (ab Zeile 6 bis vor „Unterschrift“) mit Zeilennummer im Sheet */
+  function dataRows(v) {
+    var rows = v.rows || [], endIdx = rows.length, out = [];
+    for (var i = 5; i < rows.length; i++) if (/^Unterschrift/.test(String((rows[i] || [])[0] || '').trim())) { endIdx = i; break; }
+    for (var k = 5; k < endIdx; k++) if ((rows[k] || []).some(function (x) { return String(x || '').trim(); })) out.push({ line: k + 1, r: rows[k] });
+    return out;
+  }
+
+  /** Liefert Hinweise: {line, level:'err'|'warn'|'info', text} */
+  function check(v) {
+    var issues = [], prev = null, lastDay = '';
+    var range = v.start && v.end ? [v.start, v.end] : null;
+    dataRows(v).forEach(function (o) {
+      var c = function (i) { return String(o.r[i] || '').trim(); };
+      var who = (c(0) || lastDay) + (c(2) ? ' · ' + c(2).split(',')[0] : '');
+      var add = function (level, text) { issues.push({ line: o.line, level: level, text: text, who: who }); };
+      var d = c(0);
+      if (!d && c(2)) add('warn', 'Datum fehlt');
+      if (d) {
+        var dk = dayKey(d);
+        if (!dk) add('warn', 'Datum „' + d + '“ nicht erkannt');
+        else if (range) {
+          var y = Number(range[0].slice(0, 4)), parts = dk.split('.');
+          var iso = y + '-' + ('0' + parts[1]).slice(-2) + '-' + ('0' + parts[0]).slice(-2);
+          if (iso < range[0] || iso > range[1]) add('warn', 'Datum ' + d + ' liegt außerhalb dieses Zettels');
+        }
+        if (dk !== dayKey(lastDay)) prev = null;
+        lastDay = d;
+      }
+      var b = c(3), e = c(4);
+      var bs = parseTime(b), es = parseTime(e);
+      [[b, bs, 'Beginn'], [e, es, 'Ende']].forEach(function (x) {
+        if (x[0] && x[1] === null) add('err', x[2] + ' „' + x[0] + '“ ist keine Uhrzeit' + (/^\d{1,2}[.,]\d{2}$/.test(x[0]) ? ' – gemeint ist wohl ' + x[0].replace(/[.,]/, ':') : ''));
+      });
+      if (!b && !e) { if (c(2)) add('info', 'Zeiten noch offen'); prev = null; return; }
+      if (bs !== null && es !== null) {
+        if (es <= bs) add('err', 'Ende ' + e + ' liegt nicht nach Beginn ' + b);
+        else {
+          var p = pauseH(c(5));
+          if (p === null) add('warn', 'Pause „' + c(5) + '“ nicht lesbar');
+          var soll = (es - bs) / 60 - (p || 0);
+          var g = c(6);
+          if (!g) add('warn', 'Arb.Zeit fehlt – wären ' + fmtH(soll));
+          else if (Math.abs(num(g) - soll) > 0.01) add('warn', 'Arb.Zeit ' + g.replace('.', ',') + ' passt nicht: ' + b + '–' + e + (p ? ' minus ' + fmtH(p) + ' Pause' : '') + ' = ' + fmtH(soll));
+        }
+        if (prev && prev.es !== null) {
+          if (bs < prev.es) add('err', 'Überschneidung: beginnt ' + b + ', vorherige Zeile endet ' + fmtT(prev.es));
+          else if (bs > prev.es) add('info', 'Lücke ' + fmtT(prev.es) + '–' + b);
+        }
+      }
+      prev = { es: es };
+    });
+    return issues;
+  }
+
+  function checkHtml(issues) {
+    var real = issues.filter(function (i) { return i.level !== 'info'; });
+    var info = issues.filter(function (i) { return i.level === 'info'; });
+    if (!issues.length) return '<div class="notice ok small sz-check" id="szCheck">Prüfung: alles stimmig ✓</div>';
+    var li = function (i) { return '<li class="sz-i-' + i.level + '"><b>Zeile ' + i.line + '</b> <span class="muted">(' + esc(i.who) + ')</span>: ' + esc(i.text) + '</li>'; };
+    return '<div class="notice ' + (real.length ? 'warn' : 'ok') + ' small sz-check" id="szCheck"><b>Prüfung:</b> ' +
+      (real.length ? real.length + ' Hinweis' + (real.length > 1 ? 'e' : '') : 'keine Fehler') + (info.length ? ' · ' + info.length + ' Info' : '') +
+      '<ul>' + real.map(li).join('') + '</ul>' +
+      (info.length ? '<details><summary>Infos (Lücken, offene Zeiten)</summary><ul>' + info.map(li).join('') + '</ul></details>' : '') + '</div>';
+  }
+
+  // ------------------------------------------------------------------
   // Einzelner Zettel
   // ------------------------------------------------------------------
   function tableHtml(v) {
@@ -149,29 +228,31 @@
     var get = function (r, c) { return ((rows[r] || [])[c] || '').trim(); };
     var endIdx = rows.length;
     for (var i = 5; i < rows.length; i++) if (/^Unterschrift/.test(get(i, 0))) { endIdx = i; break; }
-    var data = [];
-    for (var k = 5; k < endIdx; k++) if ((rows[k] || []).some(function (x) { return String(x || '').trim(); })) data.push(rows[k]);
+    var issues = check(v), bad = {};
+    issues.forEach(function (i) { if (i.level !== 'info') bad[i.line] = true; });
+    var dr = dataRows(v), data = dr.map(function (o) { return o.r; });
     var total = 0, ue = 0, day = '', dayTotal = 0, out = '', mob = '';
     var flush = function () {
       if (!day) return;
       out += '<tr class="sz-daysum"><td colspan="6">Summe ' + esc(day) + '</td><td>' + fmtH(dayTotal) + '</td><td></td></tr>';
       mob += '<div class="sz-l-sum"><span>Summe ' + esc(day) + '</span><b>' + fmtH(dayTotal) + ' Std.</b></div>';
     };
-    data.forEach(function (r) {
+    data.forEach(function (r, ri) {
+      var isBad = bad[dr[ri].line];
       var c = function (i) { return String(r[i] || '').trim(); };
       var d = c(0);
       if (d && d !== day) { flush(); day = d; dayTotal = 0; }
       var h = num(r[6]);
       total += h; dayTotal += h; ue += num(r[7]);
-      out += '<tr>' + [0, 1, 2, 3, 4, 5, 6, 7].map(function (i) { return '<td' + (i === 2 ? ' class="sz-obj"' : '') + '>' + esc(c(i)) + '</td>'; }).join('') + '</tr>';
+      out += '<tr' + (isBad ? ' class="sz-bad"' : '') + '>' + [0, 1, 2, 3, 4, 5, 6, 7].map(function (i) { return '<td' + (i === 2 ? ' class="sz-obj"' : '') + '>' + esc(c(i)) + '</td>'; }).join('') + '</tr>';
       var meta = [c(1) && c(1) !== '-' ? 'Nr. ' + c(1) : '', c(3) || c(4) ? c(3) + '–' + c(4) : '', c(5) && c(5) !== '-' ? 'Pause ' + c(5).replace('.', ',') : '', c(7) ? 'Ü ' + c(7).replace('.', ',') : ''].filter(Boolean).join(' · ');
-      mob += '<div class="sz-l-row"><span class="d">' + esc(d) + '</span><span class="m"><b>' + esc(c(2) || '–') + '</b><span class="small muted">' + esc(meta) + '</span></span><span class="h">' + esc(c(6).replace('.', ',')) + '</span></div>';
+      mob += '<div class="sz-l-row' + (isBad ? ' sz-bad' : '') + '"><span class="d">' + esc(d) + '</span><span class="m"><b>' + esc(c(2) || '–') + '</b><span class="small muted">' + esc(meta) + '</span></span><span class="h">' + esc(c(6).replace('.', ',')) + '</span></div>';
     });
     flush();
     var want = v.start ? Number(v.start.slice(5, 7)) + '/' + v.start.slice(0, 4) : '';
     var have = get(1, 7).replace(/^0/, '');
     var warn = want && have && have !== want ? '<div class="notice warn small" id="szMonthWarn">Oben rechts steht <b>Monat ' + esc(get(1, 7)) + '</b> – richtig wäre <b>' + esc(want) + '</b>. Bitte über „Bearbeiten“ anpassen.</div>' : '';
-    return warn + '<div class="sz-sheet">' +
+    return warn + checkHtml(issues) + '<div class="sz-sheet">' +
       '<div class="sz-head"><div class="sz-firm">' + esc(get(0, 0)) + '<br>' + esc(get(1, 0)) + '<br>' + esc(get(2, 0)) + '</div>' +
       '<div class="sz-title"><b>' + esc(get(0, 2) || 'Arbeitszeitnachweis') + '</b><br>' + esc(get(2, 2)) + '</div>' +
       '<div class="sz-meta">' + esc(get(1, 6)) + ' <b>' + esc(get(1, 7)) + '</b><br>' + esc(get(2, 6)) + ' ' + esc(get(2, 7)) + '</div></div>' +
@@ -180,6 +261,68 @@
       '<tfoot><tr><td colspan="6">Gesamt</td><td>' + fmtH(total) + '</td><td>' + (ue ? fmtH(ue) : '') + '</td></tr></tfoot></table></div>' +
       '<div class="sz-list">' + (mob || '<div class="muted" style="text-align:center;padding:18px">Noch keine Einträge</div>') +
       '<div class="sz-l-total"><span>Gesamt</span><b>' + fmtH(total) + ' Std.' + (ue ? ' · Ü ' + fmtH(ue) : '') + '</b></div></div></div>';
+  }
+
+  // ------------------------------------------------------------------
+  // Kunden aus den Aufträgen übernehmen (nur Datum, Nr., Kunde – keine Zeiten)
+  // ------------------------------------------------------------------
+  function isoAdd(iso, days) { var d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + days); return S.isoDate(d); }
+  function sheetDate(iso) { return Number(iso.slice(8, 10)) + '.' + Number(iso.slice(5, 7)) + '.'; }
+  function custLabel(r) {
+    var f = r.f || {};
+    if (r.customerName) { var p = window.Names.parseCustomer(r.customerName); if (p.label) return p.label; }
+    var n = window.Names.parseCustomer(f.kunde_name || '').name || f.kunde_name || '';
+    var a = String(f.kunde_adresse || '').replace(/^[^\/\d]+ \/ /, '');
+    return [n, a].filter(Boolean).join(', ');
+  }
+  /** Vorschläge je Tag des Zettels (bis heute); vorhanden = Nachname steht an dem Tag schon im Zettel */
+  async function fillCandidates(v) {
+    if (!v.start) return [];
+    var today = S.isoDate(new Date()), last = v.end && v.end < today ? v.end : today;
+    var have = {};
+    dataRows(v).forEach(function (o, i, all) {
+      var d = String(o.r[0] || '').trim(), k = dayKey(d);
+      if (!k) { for (var j = i - 1; j >= 0 && !k; j--) k = dayKey(all[j].r[0]); } // Folgezeile ohne Datum
+      (have[k] = have[k] || []).push(String(o.r[2] || '').toLowerCase());
+    });
+    var list = (await S.Auftraege.all()).filter(function (r) {
+      var d = U.auftragDate(r);
+      return d >= v.start && d <= last && (r.customerName || (r.f && r.f.kunde_name));
+    });
+    list.sort(function (a, b) { return U.auftragDate(a).localeCompare(U.auftragDate(b)) || (a.createdAt || 0) - (b.createdAt || 0); });
+    var seen = {};
+    return list.map(function (r) {
+      var iso = U.auftragDate(r), label = custLabel(r), nr = String((r.f && r.f.auftrags_nr) || '').trim();
+      var nach = label.split(',')[0].trim().toLowerCase();
+      var k = dayKey(sheetDate(iso)), key = k + '|' + nach;
+      var present = !!nach && (have[k] || []).some(function (t) { return t.indexOf(nach) === 0 || t.indexOf(nach + ',') >= 0; });
+      var dup = seen[key]; seen[key] = true;
+      return { id: r.id, iso: iso, date: sheetDate(iso), nr: nr, kunde: label, present: present || !!dup };
+    }).filter(function (x) { return x.kunde; });
+  }
+
+  async function openFill(v, after) {
+    var cands = await fillCandidates(v);
+    if (!cands.length) { U.toast('Keine Aufträge in diesem Zeitraum gefunden'); return; }
+    var sheet = U.openModal('<div class="sheet-head"><h3>Kunden übernehmen</h3><button class="btn small ghost" data-close aria-label="Schließen">' + U.ICONS.close + '</button></div>' +
+      '<div class="sheet-body stack"><div class="small muted">Datum, Auftrags-Nr. und Kunde (ohne Vornamen) werden unten in die nächsten freien Zeilen geschrieben. Zeiten trägst du selbst ein.</div>' +
+      '<div class="list sz-fill">' + cands.map(function (c, i) {
+        return '<label class="row"><input type="checkbox" data-i="' + i + '"' + (c.present ? '' : ' checked') + '>' +
+          '<span class="main"><span class="title" style="display:block">' + esc(c.date) + ' · ' + esc(c.kunde) + '</span>' +
+          '<span class="meta" style="display:block">' + esc([c.nr ? 'Nr. ' + c.nr : 'ohne Nr.', c.present ? 'steht schon im Zettel' : ''].filter(Boolean).join(' · ')) + '</span></span></label>';
+      }).join('') + '</div>' +
+      '<div class="btn-row" style="justify-content:flex-end"><button class="btn ghost" data-close>Abbrechen</button><button class="btn primary" id="szFillGo">Eintragen</button></div></div>');
+    U.$('#szFillGo', sheet).onclick = async function () {
+      var rows = U.$$('[data-i]', sheet).filter(function (x) { return x.checked; }).map(function (x) { var c = cands[Number(x.getAttribute('data-i'))]; return { date: c.date, nr: c.nr, kunde: c.kunde }; });
+      if (!rows.length) { U.toast('Nichts ausgewählt', true); return; }
+      this.disabled = true;
+      try {
+        var j = await S.api('szFill', { id: v.id, rows: rows }, { timeout: 60000 });
+        U.closeModal();
+        U.toast(j.written + ' Zeile' + (j.written === 1 ? '' : 'n') + ' eingetragen');
+        if (after) after();
+      } catch (e) { this.disabled = false; U.toast(e.offline ? 'Nur mit Internet möglich' : e.message, true); }
+    };
   }
 
   U.route(/^#\/stunden\/([\w-]+)$/, async function (id) {
@@ -193,14 +336,17 @@
     var isOpen = list.open.some(function (x) { return x.id === id; });
 
     function actions(v) {
+      if (!$('#szAct')) return;
       $('#szAct').innerHTML =
         '<a class="btn" target="_blank" rel="noopener" href="' + esc((v && v.editUrl) || 'https://docs.google.com/spreadsheets/d/' + id + '/edit') + '">' + U.ICONS.pen + '<span>Bearbeiten</span></a>' +
         '<button type="button" class="btn" id="szPrint">' + U.ICONS.print + '<span>Drucken</span></button>' +
         '<button type="button" class="btn" id="szShare">' + U.ICONS.upload + '<span>Teilen</span></button>' +
+        (isOpen && v ? '<button type="button" class="btn" id="szFill">' + U.ICONS.plus + '<span>Kunden übernehmen</span></button>' : '') +
         (isOpen ? '<button type="button" class="btn primary" id="szDone">Fertig – ablegen</button>' : '<button type="button" class="btn ghost small" id="szReopen">Wieder öffnen</button>');
       var it = Object.assign({}, item, v ? { name: v.name, modified: v.modified } : {});
       $('#szPrint').onclick = function () { doPrint(it, this); };
       $('#szShare').onclick = function () { doShare(it, this); };
+      if ($('#szFill')) $('#szFill').onclick = function () { openFill(v, reload); };
       if ($('#szDone')) $('#szDone').onclick = function () { doDone(it, function () { location.hash = '#/stunden'; }); };
       if ($('#szReopen')) $('#szReopen').onclick = async function () {
         try { await S.api('szReopen', { id: id }); U.toast('Wieder bei den offenen Zetteln'); await loadList(true); isOpen = true; actions(v); }
@@ -208,7 +354,7 @@
       };
     }
     function show(v, note) {
-      if (U.current() !== me) return;
+      if (U.current() !== me || !$('#szName') || !$('#szBody')) return; // Seite inzwischen gewechselt
       $('#szName').textContent = v.name;
       $('#szSub').textContent = (isOpen ? 'Offen' : 'Abgelegt' + (item.folder ? ' · ' + item.folder : '')) + (note ? ' · ' + note : '');
       $('#szBody').innerHTML = tableHtml(v);
@@ -216,15 +362,18 @@
     }
     var cached = await S.DB.get('kv', 'szv_' + id);
     if (cached) show(cached, navigator.onLine ? 'aktualisiere…' : 'offline gespeichert');
-    else { $('#szName').textContent = item.name; actions(null); }
+    else if ($('#szName') && U.current() === me) { $('#szName').textContent = item.name; actions(null); }
     if (!navigator.onLine) { if (!cached) $('#szBody').innerHTML = '<div class="empty">Offline – dieser Zettel wurde noch nicht geladen.</div>'; return; }
-    try {
-      var v = await S.api('szView', { id: id }, { timeout: 60000 });
-      await S.DB.put('kv', v, 'szv_' + id);
-      show(v, 'Stand ' + U.fmtDT(v.modified));
-    } catch (e) {
-      if (!cached && U.current() === me) $('#szBody').innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
+    async function reload() {
+      try {
+        var v = await S.api('szView', { id: id }, { timeout: 60000 });
+        await S.DB.put('kv', v, 'szv_' + id);
+        show(v, 'Stand ' + U.fmtDT(v.modified));
+      } catch (e) {
+        if (!cached && U.current() === me) $('#szBody').innerHTML = '<div class="empty">' + esc(e.message) + '</div>';
+      }
     }
+    await reload();
   }, 'stunden');
 
   // ------------------------------------------------------------------
@@ -248,5 +397,5 @@
     }
   }
 
-  window.Stunden = { heuteCard: heuteCard, tableHtml: tableHtml };
+  window.Stunden = { heuteCard: heuteCard, tableHtml: tableHtml, check: check, fillCandidates: fillCandidates };
 })();
