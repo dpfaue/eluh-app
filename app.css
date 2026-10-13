@@ -368,3 +368,5 @@ body.role-buero .chef-only { display: none !important; }
   .sz-head { grid-template-columns: 1fr 1fr; } .sz-title { grid-column: 1 / -1; order: -1; text-align: left; }
   .sz-scroll { display: none; } .sz-list { display: block; }
 }
+
+.linkbtn { background: none; border: 0; padding: 4px 0; color: var(--ink-3); text-decoration: underline; cursor: pointer; font: inherit; }

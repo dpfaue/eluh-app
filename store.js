@@ -713,6 +713,20 @@
     }
   }
 
+  /** Unterschriften zusammenführen: je Feld gewinnt der neueste Eintrag (auch „entfernt“) */
+  function mergeSig(a, b) {
+    a = a || {}; b = b || {};
+    var out = {};
+    Object.keys(a).concat(Object.keys(b)).forEach(function (k) {
+      if (out[k]) return;
+      var x = a[k], y = b[k];
+      out[k] = !x ? y : !y ? x : (Number(y.at || 0) >= Number(x.at || 0) ? y : x);
+      if (!out[k]) delete out[k];
+    });
+    return out;
+  }
+  function hasSig(sg) { return !!(sg && sg.png && !sg.removed); }
+
   async function syncAuftraege() {
     var list = await DB.all('auftraege');
     var dirty = list.filter(function (a) { return a._dirty; });
@@ -730,8 +744,13 @@
       var r = j.records[i];
       var local = await DB.get('auftraege', r.id);
       if (!local || !local._dirty || Number(r.updatedAt) >= Number(local.updatedAt)) {
+        if (local && local.sig) r.sig = mergeSig(r.sig, local.sig);
         await DB.put('auftraege', r);
         changed = true;
+      } else if (r.sig) {
+        // lokaler Stand ist neuer – aber neuere Unterschriften vom anderen Gerät trotzdem übernehmen
+        var ms = mergeSig(local.sig, r.sig);
+        if (JSON.stringify(ms) !== JSON.stringify(local.sig || {})) { local.sig = ms; await DB.put('auftraege', local); changed = true; }
       }
     }
     // gesendete Datensätze als sauber markieren (falls inzwischen nicht erneut geändert)
@@ -924,6 +943,7 @@
     addAuftragPhoto: addAuftragPhoto, removeAuftragPhoto: removeAuftragPhoto, Profile: Profile, Thumbs: Thumbs,
     loadPdfJs: loadPdfJs, shrinkImage: shrinkImage,
     Termine: Termine, Office: Office, Push: Push, refreshPing: refreshPing,
+    mergeSig: mergeSig, hasSig: hasSig,
     on: Sync.on, emit: emit, uid: uid, isoDate: isoDate, base64ToBlob: base64ToBlob, blobToBase64: blobToBase64
   };
 })();

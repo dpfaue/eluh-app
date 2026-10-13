@@ -811,22 +811,70 @@
     // ---- Speichern ----
     function setSaveState(t) { var el = $('#saveState'); if (el) el.textContent = t; }
     var pendingSave = false; // ungespeicherte Eingaben -> Sync darf die Seite nicht neu aufbauen
-    var saving = debounce(async function () {
+    var rerenderLater = false, left = false;
+    // Stand, von dem diese Seite ausgeht (für 3-Wege-Abgleich mit Änderungen anderer Geräte)
+    function snapEd(r) {
+      return { f: Object.assign({}, r.f || {}), material: JSON.stringify(r.material || []), zeiten: JSON.stringify(r.zeiten || []),
+        ablage: JSON.stringify(r.ablage || {}), cust: JSON.stringify([r.customerId || null, r.customerName || '']), status: r.status };
+    }
+    var base = snapEd(rec);
+    function busyNow() { return pendingSave || !modal.hidden || !!(document.activeElement && document.activeElement.matches('input,textarea')); }
+    /** Neueren Stand eines anderen Geräts übernehmen, ohne eigene (noch nicht übernommene) Eingaben zu verlieren */
+    function mergeRemote(fresh) {
+      var needRe = false;
+      rec.f = rec.f || {};
+      var ff = fresh.f || {};
+      Object.keys(Object.assign({}, rec.f, ff)).forEach(function (k) {
+        var lv = rec.f[k] == null ? '' : rec.f[k], bv = base.f[k] == null ? '' : base.f[k], fv = ff[k] == null ? '' : ff[k];
+        if (lv === bv && fv !== lv) {
+          rec.f[k] = fv;
+          var el = left ? null : $('[data-f="' + k + '"]');
+          if (el) el.value = fv;
+        }
+      });
+      [['material', []], ['zeiten', []], ['ablage', {}]].forEach(function (x) {
+        var lv = JSON.stringify(rec[x[0]] || x[1]), fv = JSON.stringify(fresh[x[0]] || x[1]);
+        if (lv === base[x[0]] && fv !== lv) { rec[x[0]] = JSON.parse(fv); needRe = true; }
+      });
+      var lc = JSON.stringify([rec.customerId || null, rec.customerName || '']);
+      if (lc === base.cust && JSON.stringify([fresh.customerId || null, fresh.customerName || '']) !== lc) { rec.customerId = fresh.customerId; rec.customerName = fresh.customerName; needRe = true; }
+      if (rec.status === base.status && fresh.status !== rec.status) { rec.status = fresh.status; rec.finishedAt = fresh.finishedAt; needRe = true; }
+      var ms = S.mergeSig(rec.sig, fresh.sig);
+      if (JSON.stringify(ms) !== JSON.stringify(rec.sig || {})) { rec.sig = ms; if (!left) drawSigs(); }
+      if (fresh.updatedAt > rec.updatedAt) rec.updatedAt = fresh.updatedAt;
+      base = snapEd(fresh);
+      return needRe;
+    }
+    async function persist() {
       var cur = await S.Auftraege.get(rec.id);
-      if (cur) { rec.photos = cur.photos || []; rec.drive = cur.drive; rec.office = mergeOffice(rec, cur); }
+      if (cur) {
+        rec.photos = cur.photos || []; rec.drive = cur.drive; rec.office = mergeOffice(rec, cur);
+        if (cur.updatedAt > rec.updatedAt && mergeRemote(cur)) rerenderLater = true;
+        rec.sig = S.mergeSig(cur.sig, rec.sig);
+      }
       await S.Auftraege.save(rec);
+      base = snapEd(rec);
       pendingSave = false;
+      if (left) return;
       setSaveState('Gespeichert ' + fmtTime(Date.now()));
       drawStatus();
-    }, 500);
+      if (rerenderLater && !busyNow()) { rerenderLater = false; router(); }
+    }
+    var saving = debounce(persist, 500);
     function markChanged() {
       if (rec.status === 'fertig') rec.needsRefile = true;
       pendingSave = true;
       setSaveState('Speichert…');
       saving();
     }
-    // beim Verlassen der Seite ungespeicherte Eingaben sofort sichern
-    onCleanup(function () { S.Auftraege.get(rec.id).then(function (cur) { if (cur && cur.updatedAt <= rec.updatedAt && JSON.stringify(cur.f) !== JSON.stringify(rec.f)) S.Auftraege.save(rec); }); });
+    // beim Verlassen der Seite / App im Hintergrund: ungespeicherte Eingaben sofort sichern
+    function onHide() { if (document.visibilityState === 'hidden' && pendingSave) persist(); }
+    document.addEventListener('visibilitychange', onHide);
+    onCleanup(function () {
+      left = true;
+      document.removeEventListener('visibilitychange', onHide);
+      if (pendingSave) persist();
+    });
 
     async function drawStatus() {
       var ops = await S.Outbox.all();
@@ -908,7 +956,7 @@
         rec.status = 'fertig';
         rec.needsRefile = false;
         rec.finishedAt = rec.finishedAt || Date.now();
-        await S.Auftraege.save(rec);
+        await persist(); // inkl. Unterschriften, die evtl. gerade auf einem anderen Gerät geleistet wurden
         await S.queueFiling(rec);
         toast((navigator.onLine ? 'Wird abgelegt' : 'Gespeichert – wird abgelegt, sobald Internet da ist') + (choice === 'buero' ? ' · Büro wird benachrichtigt' : ''));
         drawStatus();
@@ -1015,22 +1063,53 @@
         var box = $(k[1]);
         if (!box) return;
         var sg = (rec.sig || {})[k[0]];
+        if (!S.hasSig(sg)) sg = null;
         box.innerHTML = '<div class="sig-title">' + k[2] + '</div>' +
           (sg ? '<img class="sig-img" alt="Unterschrift" src="' + sg.png + '"><div class="small muted">' + (sg.auto ? 'gespeicherte Unterschrift' : fmtDT(sg.at)) + '</div>' +
             '<div class="btn-row"><button type="button" class="btn small" data-sign>Neu unterschreiben</button><button type="button" class="btn small ghost danger" data-unsign>Entfernen</button></div>' :
             '<div class="btn-row"><button type="button" class="btn" data-sign>' + ICONS.pen + '<span>Unterschreiben</span></button>' +
-            (k[0] === 'monteur' && prof.monteurSig ? '<button type="button" class="btn ghost small" data-mine>Meine einsetzen</button>' : '') + '</div>');
+            (k[0] === 'monteur' && prof.monteurSig ? '<button type="button" class="btn ghost small" data-mine>Meine einsetzen</button>' : '') + '</div>' +
+            (k[0] === 'kunde' ? '<button type="button" class="linkbtn small" data-find>Verlorene Unterschrift suchen</button>' : ''));
         var b1 = $('[data-sign]', box), b2 = $('[data-unsign]', box), b3 = $('[data-mine]', box);
         b1.onclick = async function () {
           var r = await openSignaturePad(k[0] === 'kunde' ? 'Unterschrift Kunde' : 'Unterschrift Monteur', k[0] === 'monteur');
           if (!r) return;
           rec.sig = rec.sig || {};
           rec.sig[k[0]] = { png: r.png, at: Date.now() };
-          if (r.saveAsMine) { await S.Profile.set({ monteurSig: r.png, autoMonteur: true }); toast('Als deine Unterschrift gespeichert'); }
           markChanged(); drawSigs();
+          persist(); // Unterschrift sofort sichern, nicht erst nach 0,5 s
+          if (r.saveAsMine) { await S.Profile.set({ monteurSig: r.png, autoMonteur: true }); toast('Als deine Unterschrift gespeichert'); }
         };
-        if (b2) b2.onclick = function () { delete rec.sig[k[0]]; markChanged(); drawSigs(); };
-        if (b3) b3.onclick = function () { rec.sig = rec.sig || {}; rec.sig.monteur = { png: prof.monteurSig, at: Date.now(), auto: true }; markChanged(); drawSigs(); };
+        if (b2) b2.onclick = function () { rec.sig[k[0]] = { removed: true, at: Date.now() }; markChanged(); drawSigs(); persist(); };
+        var b4 = $('[data-find]', box);
+        if (b4) b4.onclick = function () { findLostSig(k[0]); };
+        if (b3) b3.onclick = function () { rec.sig = rec.sig || {}; rec.sig.monteur = { png: prof.monteurSig, at: Date.now(), auto: true }; markChanged(); drawSigs(); persist(); };
+      });
+    }
+
+    /** Ältere gespeicherte Stände durchsuchen und eine verlorene Unterschrift zurückholen */
+    async function findLostSig(which) {
+      if (!navigator.onLine) { toast('Suchen geht nur mit Internet', true); return; }
+      var sheet = openModal('<div class="sheet-head"><h3>Verlorene Unterschrift suchen</h3><button class="btn small ghost" data-close aria-label="Schließen">' + ICONS.close + '</button></div>' +
+        '<div class="sheet-body stack" id="lsBody"><div class="msg"><span class="spinner"></span> Ältere Stände werden durchsucht (bis ca. 1 Minute)…</div></div>');
+      var j;
+      try { await S.Sync.run(); j = await S.api('sigFind', { id: rec.id, which: which }, { timeout: 150000 }); }
+      catch (e) { var b0 = $('#lsBody', sheet); if (b0) b0.innerHTML = '<div class="notice err">' + esc(e.message) + '</div>'; return; }
+      var body = $('#lsBody', sheet);
+      if (!body) return;
+      if (!j.found.length) { body.innerHTML = '<div class="notice warn">In den letzten ' + j.scanned + ' gespeicherten Ständen keine Unterschrift für diesen Auftrag gefunden.</div>'; return; }
+      body.innerHTML = '<div class="small muted">Gefunden in älteren Ständen – die richtige antippen:</div>' + j.found.map(function (x, i) {
+        return '<button type="button" class="card pad" data-pick="' + i + '" style="text-align:left;width:100%"><img class="sig-img" alt="Unterschrift" src="' + x.png + '">' +
+          '<div class="small muted">unterschrieben ' + (x.at ? fmtDT(x.at) : '–') + '</div></button>';
+      }).join('');
+      $$('[data-pick]', body).forEach(function (b) {
+        b.onclick = function () {
+          var x = j.found[Number(b.getAttribute('data-pick'))];
+          rec.sig = rec.sig || {};
+          rec.sig[which] = { png: x.png, at: Date.now(), restored: x.at || true };
+          closeModal(); markChanged(); drawSigs(); persist();
+          toast('Unterschrift wiederhergestellt');
+        };
       });
     }
 
@@ -1043,18 +1122,26 @@
     drawZeiten();
     rerenderOn(['outbox', 'sync'], drawStatus);
     rerenderOn(['outbox'], drawPhotos);
+    function onBlur() { setTimeout(function () { if (rerenderLater && !left && !busyNow()) { rerenderLater = false; router(); } }, 300); }
+    view.addEventListener('focusout', onBlur);
+    onCleanup(function () { view.removeEventListener('focusout', onBlur); });
     // Änderungen von anderen Geräten übernehmen (nur wenn gerade nicht getippt/unterschrieben wird)
     function editable(r) { return JSON.stringify([r.f, r.material, r.sig || {}, r.customerId, r.ablage, r.status, r.zeiten || []]); }
     rerenderOn(['auftraege'], async function () {
       var fresh = await S.Auftraege.get(rec.id);
       if (!fresh) return;
       if (fresh.deleted) { toast('Auftrag wurde auf einem anderen Gerät gelöscht'); location.hash = '#/auftraege'; return; }
-      var busy = pendingSave || !modal.hidden || (document.activeElement && document.activeElement.matches('input,textarea'));
+      var busy = busyNow();
       if (fresh.updatedAt > rec.updatedAt && editable(fresh) !== editable(rec) && !fresh._dirty && !busy) {
         router();
         return;
       }
-      if (fresh.updatedAt > rec.updatedAt) rec.updatedAt = fresh.updatedAt;
+      // während getippt/unterschrieben wird: Änderungen des anderen Geräts einarbeiten statt sie zu überschreiben
+      if (fresh.updatedAt > rec.updatedAt) { if (mergeRemote(fresh)) rerenderLater = true; }
+      else {
+        var ms = S.mergeSig(rec.sig, fresh.sig);
+        if (JSON.stringify(ms) !== JSON.stringify(rec.sig || {})) { rec.sig = ms; drawSigs(); }
+      }
       rec.drive = fresh.drive;
       rec.office = mergeOffice(rec, fresh);
       var photosChanged = JSON.stringify(rec.photos || []) !== JSON.stringify(fresh.photos || []);
