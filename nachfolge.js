@@ -65,6 +65,7 @@
     var from = n.fromAuftragId ? await S.Auftraege.get(n.fromAuftragId) : null;
     U.view.innerHTML =
       '<div class="page-head"><a class="btn ghost small" href="#/nachfolge">‹ Nachfolgeaufträge</a><h1>Nachfolgeauftrag</h1><div class="sub" id="nfState"></div></div>' +
+      '<div id="nfConf"></div>' +
       '<section class="form-section card pad stack">' +
       '<div><div class="small muted">Kunde</div><div id="nfCust"></div></div>' +
       (n.fromAuftragId ? '<div class="small muted">Aus Auftrag: ' + (from && !from.deleted ? '<a href="#/auftrag/' + esc(from.id) + '">' + esc(n.fromLabel || 'Auftrag öffnen') + '</a>' : esc(n.fromLabel || '–')) + '</div>' : '') +
@@ -88,13 +89,48 @@
     $('#nfTitle').value = n.title || '';
     $('#nfText').value = n.text || '';
     var timer = null;
+    var sess = new S.EditSession(n); // nur echte Eingaben bekommen einen neuen Zeitstempel
+    var FIELDS = { title: '#nfTitle', text: '#nfText' };
     async function persist() {
       clearTimeout(timer); timer = null;
       var cur = await S.Auftraege.get(n.id);
       if (cur && cur.auftragId && !n.auftragId) n.auftragId = cur.auftragId;
-      await S.Nachfolge.save(n);
+      await sess.stamp(n);
+      var shown = {};
+      Object.keys(FIELDS).forEach(function (k) { var el = $(FIELDS[k]); if (el) shown[k] = el.value; });
+      await S.Nachfolge.save(n); // führt mit Änderungen anderer Geräte zusammen
+      sess.reset(n);
+      showFields(shown);
       var el = $('#nfSave'); if (el) el.textContent = 'Gespeichert ' + U.fmtTime(Date.now());
     }
+    /** Felder an den gespeicherten Stand anpassen – was inzwischen getippt wurde, bleibt */
+    function showFields(shown) {
+      Object.keys(FIELDS).forEach(function (k) {
+        var el = $(FIELDS[k]);
+        if (!el) return;
+        if (shown && el.value !== shown[k]) { n[k] = el.value; return; }
+        if (el.value !== (n[k] || '')) el.value = n[k] || '';
+      });
+      drawConf();
+    }
+    function drawConf() {
+      U.conflictBox($('#nfConf'), n, { title: 'Was ist noch zu tun?', text: 'Details, Material, Notizen' }, {
+        apply: function (c) { n[c.k] = c.v; var el = $(FIELDS[c.k]); if (el) el.value = c.v; return true; },
+        save: function () { changed(); }
+      });
+    }
+    U.rerenderOn(['auftraege'], async function () {
+      if (timer) return; // eigene Eingabe wird gleich gespeichert und dabei zusammengeführt
+      var fresh = await S.Auftraege.get(n.id);
+      if (!fresh || timer) return;
+      if (!window.RecMerge.changedKeys(fresh, sess.base).length && JSON.stringify(fresh.cf || {}) === JSON.stringify(n.cf || {})) return;
+      var ae = document.activeElement;
+      Object.keys(fresh).forEach(function (k) { if (k.charAt(0) !== '_') n[k] = fresh[k]; });
+      Object.keys(n).forEach(function (k) { if (!(k in fresh)) delete n[k]; });
+      sess.reset(n);
+      Object.keys(FIELDS).forEach(function (k) { var el = $(FIELDS[k]); if (el && el !== ae && el.value !== (n[k] || '')) el.value = n[k] || ''; });
+      drawConf(); drawCust(); drawAct();
+    });
     function changed() { var el = $('#nfSave'); if (el) el.textContent = 'Speichert…'; clearTimeout(timer); timer = setTimeout(persist, 500); }
     $('#nfTitle').oninput = function () { n.title = this.value; changed(); };
     $('#nfText').oninput = function () { n.text = this.value; changed(); };
@@ -142,8 +178,9 @@
       location.hash = '#/nachfolge';
     };
     drawCust();
+    drawConf();
     await drawAct();
-    if (!n.title) $('#nfTitle').focus();
+    if (!n.title && $('#nfTitle')) $('#nfTitle').focus();
   }, 'nachfolge');
 
   /** Offene Nachfolgeaufträge eines Kunden / eines Auftrags (für Hinweise an anderen Stellen) */

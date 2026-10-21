@@ -143,6 +143,7 @@
   }
 
   async function editor(t, isNew) {
+    var sess = new S.EditSession(t);
     var s = await S.Settings.get();
     var isBuero = s.role === 'buero';
     var people = {};
@@ -153,6 +154,7 @@
     }
     U.view.innerHTML =
       '<div class="page-head"><a class="btn ghost small" href="#/termine">‹ Termine</a><h1>' + (isNew ? 'Neuer Termin' : esc(t.title || 'Termin')) + '</h1></div>' +
+      '<div id="tConf"></div>' +
       '<div class="card"><section class="form-section stack">' +
       field('title', 'Was? (z. B. Wartung Gastherme)') +
       '<div class="chips" id="quickChips" style="margin-top:-4px">' + QUICK.map(function (q) {
@@ -220,6 +222,7 @@
       if (!String(t.title || '').trim()) { U.toast('Bitte eintragen, was gemacht wird', true); return; }
       if (!t.date) { U.toast('Bitte ein Datum wählen', true); return; }
       t.remind = (t.remind || []).sort(function (a, b) { return b - a; });
+      await sess.stamp(t); // nur geänderte Felder – Änderungen anderer am selben Termin bleiben erhalten
       await S.Termine.save(t);
       U.toast(navigator.onLine ? 'Termin gespeichert – die anderen werden benachrichtigt' : 'Gespeichert – wird übertragen, sobald Internet da ist');
       location.hash = '#/termine';
@@ -250,6 +253,12 @@
     };
     drawCust();
     syncTime();
+    (function drawConf() {
+      U.conflictBox($('#tConf'), t, { title: 'Was?', address: 'Adresse / Ort', date: 'Datum', time: 'Von', end: 'Bis', person: 'Für wen?', note: 'Notiz' }, {
+        apply: function (c) { t[c.k] = c.v; var el = $('[data-t="' + c.k + '"]'); if (el) el.value = c.v; return true; },
+        save: async function () { await S.Termine.save(t); sess.reset(t); drawConf(); }
+      });
+    })();
   }
 
   window.TermineUI = { startMs: startMs };

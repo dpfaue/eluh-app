@@ -270,13 +270,14 @@
       return list.filter(function (a) { return !a.deleted && a.kind !== 'profile' && a.kind !== 'nachfolge'; });
     },
     get: function (id) { return DB.get('auftraege', id); },
-    save: async function (rec) {
-      rec.updatedAt = Math.max(Date.now(), (rec.updatedAt || 0) + 1);
-      rec._dirty = true;
-      await DB.put('auftraege', rec);
+    /** Speichern: mit dem gespeicherten Stand feldweise zusammenführen (Änderungen anderer Geräte bleiben erhalten).
+     *  Das übergebene Objekt wird auf den gespeicherten Stand gebracht (außer opts.keep). */
+    save: async function (rec, opts) {
+      var out = await recLock(async function () { var o = await localMerge('auftraege', rec); await DB.put('auftraege', o); return o; });
+      if (!(opts && opts.keep)) replaceObj(rec, out);
       emit('auftraege');
       Sync.schedule(4000);
-      return rec;
+      return out;
     },
     remove: async function (rec) {
       rec.deleted = true;
@@ -305,6 +306,46 @@
       return Object.assign(rec, preset || {});
     }
   };
+
+  /** Lesen-Zusammenführen-Schreiben nacheinander (Speichern und Sync dürfen sich nicht gegenseitig überschreiben) */
+  var lockChain = Promise.resolve();
+  function recLock(fn) {
+    var p = lockChain.then(fn, fn);
+    lockChain = p.catch(function () {});
+    return p;
+  }
+  /** Name dieses Geräts für die Zeitstempel („wer hat geändert“) */
+  async function myName() {
+    var s = await Settings.get();
+    return String(s.deviceName || (s.role === 'buero' ? 'Büro' : 'Dominic')).slice(0, 40);
+  }
+  function replaceObj(target, src) {
+    if (target === src) return target;
+    Object.keys(target).forEach(function (k) { delete target[k]; });
+    Object.assign(target, src);
+    return target;
+  }
+  /** lokalen Stand mit neuen Eingaben zusammenführen; Eingaben ohne eigenen Zeitstempel bekommen „jetzt“ */
+  async function localMerge(store, rec) {
+    var prev = await DB.get(store, rec.id);
+    window.RecMerge.ensureIds(rec);
+    var out;
+    if (prev) {
+      out = window.RecMerge.merge(prev, rec, { stampB: true, now: Date.now(), by: await myName(), metaFrom: 'b' });
+      Object.keys(rec).forEach(function (k) { if (k.charAt(0) === '_' && k !== '_dirty') out[k] = rec[k]; });
+    } else {
+      out = rec;
+      out.ts = out.ts || {};
+    }
+    out.updatedAt = Math.max(Date.now(), ((prev && prev.updatedAt) || 0) + 1, (rec.updatedAt || 0) + 1);
+    out._dirty = true;
+    return out;
+  }
+
+  /** Bearbeitung auf einer Seite: merkt sich den Ausgangsstand, damit nur echte Eingaben einen neuen Zeitstempel bekommen */
+  function EditSession(rec) { this.base = window.RecMerge.snapshot(rec); }
+  EditSession.prototype.stamp = async function (rec) { return window.RecMerge.stampEdits(rec, this.base, await myName(), Date.now()); };
+  EditSession.prototype.reset = function (rec) { this.base = window.RecMerge.snapshot(rec); };
 
   // Profil (wird wie ein Auftrag synchronisiert, z.B. gespeicherte Monteur-Unterschrift)
   var Profile = {
@@ -489,14 +530,16 @@
     var tmp = uid('tmp-');
     await Files.put({ id: tmp, name: prep.name, mime: prep.mime, blob: prep.blob, size: prep.blob.size, modified: Date.now(), cachedAt: Date.now() });
     rec.photos = rec.photos || [];
-    rec.photos.push({ id: tmp, name: prep.name, mime: prep.mime, size: prep.blob.size, addedAt: Date.now() });
+    rec.photos.push({ id: tmp, pid: tmp, name: prep.name, mime: prep.mime, size: prep.blob.size, addedAt: Date.now() });
     await Auftraege.save(rec);
     await Outbox.add({ type: 'uploadPhoto', auftragId: rec.id, photoId: tmp });
     return tmp;
   }
 
   async function removeAuftragPhoto(rec, photoId) {
+    var gone = (rec.photos || []).filter(function (p) { return p.id === photoId; })[0];
     rec.photos = (rec.photos || []).filter(function (p) { return p.id !== photoId; });
+    if (gone) { rec.photosDel = rec.photosDel || {}; rec.photosDel[window.RecMerge.photoKey(gone)] = Date.now(); }
     await Auftraege.save(rec);
     var ops = await Outbox.all();
     for (var i = 0; i < ops.length; i++) {
@@ -763,26 +806,35 @@
     var j = await api('sync', { changes: changes, since: seq });
     var changed = false;
     for (var i = 0; i < j.records.length; i++) {
-      var r = j.records[i];
-      var local = await DB.get('auftraege', r.id);
-      if (!local || !local._dirty || Number(r.updatedAt) >= Number(local.updatedAt)) {
-        if (local && local.sig) r.sig = mergeSig(r.sig, local.sig);
-        await DB.put('auftraege', r);
-        changed = true;
-      } else if (r.sig) {
-        // lokaler Stand ist neuer – aber neuere Unterschriften vom anderen Gerät trotzdem übernehmen
-        var ms = mergeSig(local.sig, r.sig);
-        if (JSON.stringify(ms) !== JSON.stringify(local.sig || {})) { local.sig = ms; await DB.put('auftraege', local); changed = true; }
-      }
+      if (await applyServer('auftraege', j.records[i], sent)) changed = true;
     }
     // gesendete Datensätze als sauber markieren (falls inzwischen nicht erneut geändert)
     for (var id in sent) {
-      var cur = await DB.get('auftraege', id);
-      if (cur && cur._dirty && cur.updatedAt === sent[id]) { delete cur._dirty; await DB.put('auftraege', cur); changed = true; }
+      if (await markClean('auftraege', id, sent[id])) changed = true;
     }
     await DB.put('kv', j.seq, 'seq');
     if (changed) emit('auftraege');
     return j.iv || null;
+  }
+
+  /** Stand vom Server übernehmen – feldweise mit dem lokalen zusammengeführt. Lokal ungesendete Änderungen bleiben „offen“. */
+  function markClean(store, id, at) {
+    return recLock(async function () {
+      var cur = await DB.get(store, id);
+      if (!cur || !cur._dirty || cur.updatedAt !== at) return false;
+      delete cur._dirty; await DB.put(store, cur); return true;
+    });
+  }
+  function applyServer(store, r, sent) { return recLock(function () { return applyServerNow(store, r, sent); }); }
+  async function applyServerNow(store, r, sent) {
+    var local = await DB.get(store, r.id);
+    if (!local) { await DB.put(store, r); return true; }
+    var pending = local._dirty && local.updatedAt !== sent[r.id];
+    var out = window.RecMerge.merge(local, r, pending ? { metaFrom: 'a' } : {});
+    if (pending) out._dirty = true;
+    if (JSON.stringify(out) === JSON.stringify(local)) return false;
+    await DB.put(store, out);
+    return true;
   }
 
   async function syncIndex(force, full, serverVersion) {
@@ -818,13 +870,12 @@
   var Termine = {
     all: async function () { return (await DB.all('termine')).filter(function (t) { return !t.deleted; }); },
     get: function (id) { return DB.get('termine', id); },
-    save: async function (t) {
-      t.updatedAt = Math.max(Date.now(), (t.updatedAt || 0) + 1);
-      t._dirty = true;
-      await DB.put('termine', t);
+    save: async function (t, opts) {
+      var out = await recLock(async function () { var o = await localMerge('termine', t); await DB.put('termine', o); return o; });
+      if (!(opts && opts.keep)) replaceObj(t, out);
       emit('termine');
       Sync.schedule(800);
-      return t;
+      return out;
     },
     remove: async function (t) { t.deleted = true; return Termine.save(t); },
     create: async function (preset) {
@@ -847,13 +898,10 @@
     var j = await api('termine', { changes: changes, since: seq, deviceId: s.deviceId });
     var changed = false;
     for (var i = 0; i < j.records.length; i++) {
-      var r = j.records[i];
-      var local = await DB.get('termine', r.id);
-      if (!local || !local._dirty || Number(r.updatedAt) >= Number(local.updatedAt)) { await DB.put('termine', r); changed = true; }
+      if (await applyServer('termine', j.records[i], sent)) changed = true;
     }
     for (var id in sent) {
-      var cur = await DB.get('termine', id);
-      if (cur && cur._dirty && cur.updatedAt === sent[id]) { delete cur._dirty; await DB.put('termine', cur); changed = true; }
+      if (await markClean('termine', id, sent[id])) changed = true;
     }
     await DB.put('kv', j.seq, 'termineSeq');
     if (changed) emit('termine');
@@ -1012,7 +1060,7 @@
     addAuftragPhoto: addAuftragPhoto, removeAuftragPhoto: removeAuftragPhoto, Profile: Profile, Thumbs: Thumbs,
     loadPdfJs: loadPdfJs, shrinkImage: shrinkImage,
     Termine: Termine, Office: Office, Push: Push, refreshPing: refreshPing,
-    mergeSig: mergeSig, hasSig: hasSig, Nachfolge: Nachfolge,
+    mergeSig: mergeSig, hasSig: hasSig, Nachfolge: Nachfolge, myName: myName, EditSession: EditSession,
     on: Sync.on, emit: emit, uid: uid, isoDate: isoDate, base64ToBlob: base64ToBlob, blobToBase64: blobToBase64
   };
 })();

@@ -389,3 +389,10 @@ body.role-buero .chef-only { display: none !important; }
 .sz-fill .row { gap: 10px; align-items: center; cursor: pointer; }
 .sz-fill input[type=checkbox] { width: 20px; height: 20px; flex: none; }
 .sz-fill { max-height: 55vh; overflow: auto; }
+
+/* Gleichzeitig geändert */
+.cf-box { margin-top: 10px; }
+.cf-item { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.cf-k { font-weight: 600; margin-bottom: 4px; }
+.cf-val { background: var(--surface); color: var(--ink); border-radius: 8px; padding: 6px 9px; margin: 2px 0 6px; white-space: pre-wrap; max-height: 160px; overflow: auto; font-size: 14px; }
+.cf-chip { font-size: 12px; }

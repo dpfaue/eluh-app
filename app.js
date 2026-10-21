@@ -91,6 +91,54 @@
   }
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeModal(); });
 
+  /** Hinweis „auf zwei Geräten gleichzeitig geändert“: beide Fassungen zeigen, Übernehmen / Verwerfen.
+   *  h.apply(c) setzt die andere Fassung (false = ging nicht), h.save() speichert. */
+  function conflictLabel(rec, k, labels) {
+    var x = window.RecMerge.kind(k);
+    if (x.t === 'sub' && x.o === 'f') return labels[x.s] || x.s;
+    if (x.t === 'cell') {
+      var L = labels[x.p] || {}, list = rec[x.p === 'm' ? 'material' : 'zeiten'] || [], n = 0;
+      list.forEach(function (r, i) { if (r && r.id === x.id) n = i + 1; });
+      return (L._ || 'Zeile') + (n ? ' Zeile ' + n : '') + ' – ' + (L[x.c] || x.c);
+    }
+    return labels[k] || k;
+  }
+  function conflictBox(box, rec, labels, h) {
+    if (!box) return;
+    var M = window.RecMerge;
+    var list = M.openConflicts(rec).filter(function (c) { return !M.same(M.getValue(rec, c.k), c.v); });
+    if (!list.length) { box.innerHTML = ''; return; }
+    function val(v) { v = v == null ? '' : String(v); return v.trim() ? esc(v) : '<span class="muted">(leer)</span>'; }
+    box.innerHTML = '<div class="notice warn cf-box"><b>Auf zwei Geräten gleichzeitig geändert</b>' +
+      '<div class="small" style="margin-top:2px">Nichts ist verloren – bitte kurz prüfen, welche Fassung stimmt.</div>' +
+      list.map(function (c, i) {
+        return '<div class="cf-item"><div class="cf-k">' + esc(conflictLabel(rec, c.k, labels)) + '</div>' +
+          '<div class="small muted">Jetzt eingetragen' + (c.wby ? ' · ' + esc(c.wby) : '') + (c.wat ? ' · ' + fmtDT(c.wat) : '') + '</div>' +
+          '<div class="cf-val">' + val(M.getValue(rec, c.k)) + '</div>' +
+          '<div class="small muted">Andere Fassung' + (c.by ? ' · ' + esc(c.by) : '') + (c.at ? ' · ' + fmtDT(c.at) : '') + '</div>' +
+          '<div class="cf-val">' + val(c.v) + '</div>' +
+          '<div class="btn-row"><button type="button" class="btn small" data-cfuse="' + i + '">Andere Fassung übernehmen</button>' +
+          '<button type="button" class="btn small ghost" data-cfdrop="' + i + '">So lassen</button></div></div>';
+      }).join('') + '</div>';
+    function done(c) {
+      rec.cf = Object.assign({}, rec.cf || {});
+      rec.cf[c.id] = Object.assign({}, c, { done: Date.now() });
+    }
+    $$('[data-cfuse]', box).forEach(function (b) {
+      b.onclick = function () {
+        var c = list[Number(b.getAttribute('data-cfuse'))];
+        if (h.apply(c) === false) return;
+        done(c); h.save(); conflictBox(box, rec, labels, h);
+        toast('Andere Fassung übernommen');
+      };
+    });
+    $$('[data-cfdrop]', box).forEach(function (b) {
+      b.onclick = function () {
+        done(list[Number(b.getAttribute('data-cfdrop'))]); h.save(); conflictBox(box, rec, labels, h);
+      };
+    });
+  }
+
   function confirmBox(title, text, okLabel, danger) {
     return new Promise(function (resolve) {
       var done = false;
@@ -501,7 +549,8 @@
             '<input type="checkbox" aria-label="Zum Drucken auswählen" ' + (listState.sel.has(r.id) ? 'checked' : '') + '>' +
             '<a class="main" href="#/auftrag/' + r.id + '" style="text-decoration:none;color:inherit"><div class="title">' + esc(auftragTitle(r)) + '</div>' +
             '<div class="meta">' + esc(meta || '–') + '</div></a>' +
-            '<span class="badges">' + (officeStatus(r) ? '<span class="badge ' + officeStatus(r).cls + '">' + officeStatus(r).text + '</span>' : '') +
+            '<span class="badges">' + (window.RecMerge.openConflicts(r).length ? '<span class="badge warn">Bitte prüfen</span>' : '') +
+            (officeStatus(r) ? '<span class="badge ' + officeStatus(r).cls + '">' + officeStatus(r).text + '</span>' : '') +
             '<span class="badge ' + x.st.cls + '">' + x.st.text + '</span></span></div>';
         }).join('') + '</div>';
         $$('#list .row').forEach(function (row) {
@@ -619,6 +668,7 @@
     var f = rec.f;
     if (!rec.material || !rec.material.length) rec.material = [{}, {}, {}];
     rec.ablage = rec.ablage || { datum: f.datum_annahme || S.isoDate(new Date()), art: '' };
+    window.RecMerge.ensureIds(rec);
 
     function input(key, label, opts) {
       opts = opts || {};
@@ -629,7 +679,7 @@
     view.innerHTML =
       '<div class="page-head"><a class="btn ghost small" href="#/auftraege">‹ Übersicht</a>' +
       '<h1 id="edTitle">' + esc(auftragTitle(rec)) + '</h1><span id="saveState" class="small muted"></span></div>' +
-      '<div id="statusBox"></div><div id="nfBox"></div>' +
+      '<div id="cfBox"></div><div id="statusBox"></div><div id="nfBox"></div>' +
       '<div class="card" style="margin-top:12px">' +
       '<section class="form-section"><h3>Arbeitsauftrag</h3><div class="grid2">' +
       input('auftrags_nr', 'Auftrags-Nr.') + input('datum_annahme', 'Datum der Annahme', { type: 'date' }) + '</div></section>' +
@@ -707,7 +757,7 @@
     function drawRows() {
       $('#matRows').innerHTML = rec.material.map(function (m, i) {
         function cell(k, ph, extra) { return '<input data-m="' + i + '" data-k="' + k + '" value="' + esc(m[k]) + '" placeholder="' + ph + '" ' + (extra || '') + ' autocomplete="off">'; }
-        return '<div class="mat-row">' + cell('artnr', 'Artikel-Nr.') + cell('bez', 'Bezeichnung') + cell('einheit', 'Einheit', 'list="einheiten"') +
+        return '<div class="mat-row" data-rid="' + esc(m.id || '') + '">' + cell('artnr', 'Artikel-Nr.') + cell('bez', 'Bezeichnung') + cell('einheit', 'Einheit', 'list="einheiten"') +
           cell('menge', 'Menge', 'inputmode="decimal"') + cell('preis', 'Einzelpreis', 'inputmode="decimal"') + cell('gesamt', 'Gesamt', 'inputmode="decimal"') +
           '<button type="button" class="del" data-del="' + i + '" aria-label="Position löschen">' + ICONS.close + '</button></div>';
       }).join('');
@@ -720,13 +770,13 @@
       $$('#matRows [data-del]').forEach(function (b) {
         b.onclick = function () {
           rec.material.splice(Number(b.getAttribute('data-del')), 1);
-          if (!rec.material.length) rec.material.push({});
+          if (!rec.material.length) rec.material.push({ id: S.uid('m-') });
           drawRows(); markChanged();
         };
       });
     }
     $('#addRow').onclick = function () {
-      rec.material.push({});
+      rec.material.push({ id: S.uid('m-') });
       drawRows();
       var last = $$('#matRows .mat-row').pop();
       if (last) $('input', last).focus();
@@ -839,57 +889,117 @@
     }
 
     // ---- Speichern ----
+    // Jede Eingabe bekommt beim Speichern einen eigenen Zeitstempel (je Feld / Materialzeile / Zelle).
+    // Beim Zusammenführen mit Änderungen anderer Geräte gewinnt je Feld der neuere Stand – sonst bleibt alles erhalten.
     function setSaveState(t) { var el = $('#saveState'); if (el) el.textContent = t; }
     var pendingSave = false; // ungespeicherte Eingaben -> Sync darf die Seite nicht neu aufbauen
-    var rerenderLater = false, left = false;
-    // Stand, von dem diese Seite ausgeht (für 3-Wege-Abgleich mit Änderungen anderer Geräte)
-    function snapEd(r) {
-      return { f: Object.assign({}, r.f || {}), material: JSON.stringify(r.material || []), zeiten: JSON.stringify(r.zeiten || []),
-        ablage: JSON.stringify(r.ablage || {}), cust: JSON.stringify([r.customerId || null, r.customerName || '']), status: r.status };
-    }
-    var base = snapEd(rec);
+    var rerenderLater = false, left = false, persisting = false, remoteAgain = false;
+    var M = window.RecMerge;
+    var base = M.snapshot(rec); // Stand, von dem diese Seite ausgeht
     function busyNow() { return pendingSave || !modal.hidden || !!(document.activeElement && document.activeElement.matches('input,textarea')); }
-    /** Neueren Stand eines anderen Geräts übernehmen, ohne eigene (noch nicht übernommene) Eingaben zu verlieren */
-    function mergeRemote(fresh) {
-      var needRe = false;
-      rec.f = rec.f || {};
-      var ff = fresh.f || {};
-      Object.keys(Object.assign({}, rec.f, ff)).forEach(function (k) {
-        var lv = rec.f[k] == null ? '' : rec.f[k], bv = base.f[k] == null ? '' : base.f[k], fv = ff[k] == null ? '' : ff[k];
-        if (lv === bv && fv !== lv) {
-          rec.f[k] = fv;
-          var el = left ? null : $('[data-f="' + k + '"]');
-          if (el) el.value = fv;
+    /** Stand src übernehmen, eigene Eingaben seit „ref“ (flache Liste) behalten. Gibt geänderte und behaltene Schlüssel zurück. */
+    function adoptFrom(src, ref) {
+      var cur = M.flatten(rec), sf = M.flatten(src), kept = {}, changed = [], flat = {}, keys = {};
+      Object.keys(cur).concat(Object.keys(ref), Object.keys(sf)).forEach(function (k) { keys[k] = 1; });
+      Object.keys(keys).forEach(function (k) {
+        if (!M.same(cur[k], ref[k])) kept[k] = 1;
+        flat[k] = kept[k] ? cur[k] : sf[k];
+        if (!M.same(cur[k], flat[k])) changed.push(k);
+      });
+      var ts = Object.assign({}, src.ts || {});
+      Object.keys(kept).forEach(function (k) { if (rec.ts && rec.ts[k]) ts[k] = rec.ts[k]; });
+      var out = M.compose(rec, [src], flat, M.metaOf(src));
+      out.ts = ts;
+      if (src.cf) out.cf = src.cf; else delete out.cf;
+      out.sig = S.mergeSig(rec.sig, src.sig);
+      Object.keys(rec).forEach(function (k) { delete rec[k]; });
+      Object.assign(rec, out);
+      return { changed: changed, kept: kept };
+    }
+    function rowsInPlace(sel, attr, list) {
+      var box = $(sel);
+      if (!box) return 1;
+      var rowsEl = box.children;
+      if (rowsEl.length !== list.length) return 0;
+      for (var i = 0; i < list.length; i++) if (rowsEl[i].getAttribute('data-rid') !== String(list[i].id)) return 0;
+      $$('[' + attr + ']', box).forEach(function (el) {
+        var row = list[Number(el.getAttribute(attr))] || {}, v = row[el.getAttribute('data-k')];
+        v = v == null ? '' : String(v);
+        if (el !== document.activeElement && el.value !== v) el.value = v;
+      });
+      return 1;
+    }
+    /** Anzeige an übernommene Änderungen anpassen (ohne das Feld zu stören, in dem gerade getippt wird) */
+    function showChanges(changed) {
+      if (left) return;
+      if (!changed.length) { drawSigs(); drawConf(); return; }
+      var rows = false, other = false;
+      changed.forEach(function (k) {
+        var x = M.kind(k);
+        if (x.t === 'sub' && x.o === 'f') {
+          var el = $('[data-f="' + x.s + '"]');
+          if (el) el.value = rec.f[x.s] == null ? '' : rec.f[x.s];
+          if (x.s === 'arbeitsumfang') { grow(); drawTb(); }
+        } else if (x.t === 'sub' && x.o === 'ablage') {
+          var ea = $('[data-ablage="' + x.s + '"]');
+          if (ea) ea.value = (rec.ablage || {})[x.s] || '';
+        } else if (x.t === 'row' || x.t === 'cell') rows = true;
+        else other = true;
+      });
+      if (rows) {
+        if (!rec.material || !rec.material.length) rec.material = [{}, {}, {}];
+        M.ensureIds(rec);
+        var ae = document.activeElement;
+        // Zeilen gleich geblieben → nur Werte ersetzen (das Feld mit dem Cursor bleibt unberührt), sonst neu zeichnen
+        var inPlace = rowsInPlace('#matRows', 'data-m', rec.material) & rowsInPlace('#zeitRows', 'data-z', rec.zeiten || []);
+        if (!inPlace) {
+          // neu zeichnen; steht der Cursor in einer Zeile, kommt er an dieselbe Stelle zurück
+          var foc = null;
+          if (ae && ae.closest && ae.closest('#matRows,#zeitRows')) {
+            var rowEl = ae.closest('[data-rid]');
+            foc = { box: ae.closest('#matRows') ? '#matRows' : '#zeitRows', rid: rowEl && rowEl.getAttribute('data-rid'), k: ae.getAttribute('data-k'), pos: ae.selectionStart };
+          }
+          drawRows();
+          Promise.resolve(drawZeiten()).then(function () {
+            if (!foc || left) return;
+            var r2 = $(foc.box + ' [data-rid="' + CSS.escape(foc.rid || '') + '"]');
+            var el2 = r2 && $('[data-k="' + foc.k + '"]', r2);
+            if (el2) { el2.focus(); try { if (foc.pos != null) el2.setSelectionRange(foc.pos, foc.pos); } catch (e) { /* Datumsfeld */ } }
+          });
         }
-      });
-      [['material', []], ['zeiten', []], ['ablage', {}]].forEach(function (x) {
-        var lv = JSON.stringify(rec[x[0]] || x[1]), fv = JSON.stringify(fresh[x[0]] || x[1]);
-        if (lv === base[x[0]] && fv !== lv) { rec[x[0]] = JSON.parse(fv); needRe = true; }
-      });
-      var lc = JSON.stringify([rec.customerId || null, rec.customerName || '']);
-      if (lc === base.cust && JSON.stringify([fresh.customerId || null, fresh.customerName || '']) !== lc) { rec.customerId = fresh.customerId; rec.customerName = fresh.customerName; needRe = true; }
-      if (rec.status === base.status && fresh.status !== rec.status) { rec.status = fresh.status; rec.finishedAt = fresh.finishedAt; needRe = true; }
-      var ms = S.mergeSig(rec.sig, fresh.sig);
-      if (JSON.stringify(ms) !== JSON.stringify(rec.sig || {})) { rec.sig = ms; if (!left) drawSigs(); }
-      if (fresh.updatedAt > rec.updatedAt) rec.updatedAt = fresh.updatedAt;
-      base = snapEd(fresh);
-      return needRe;
+      }
+      $('#edTitle').textContent = auftragTitle(rec);
+      drawPath();
+      if (other) { drawCustomer(); drawStatus(); }
+      drawSigs();
+      drawConf();
     }
     async function persist() {
-      var cur = await S.Auftraege.get(rec.id);
-      if (cur) {
-        rec.photos = cur.photos || []; rec.drive = cur.drive; rec.office = mergeOffice(rec, cur);
-        if (cur.updatedAt > rec.updatedAt && mergeRemote(cur)) rerenderLater = true;
-        rec.sig = S.mergeSig(cur.sig, rec.sig);
+      if (persisting) { persistAgain = true; return; }
+      persisting = true;
+      try {
+        var cur = await S.Auftraege.get(rec.id);
+        if (cur) { rec.photos = cur.photos || []; rec.photosDel = cur.photosDel; rec.drive = cur.drive; rec.office = mergeOffice(rec, cur); }
+        M.ensureIds(rec);
+        await S.EditSession.prototype.stamp.call({ base: base }, rec);
+        var sent = M.flatten(rec);
+        var out = await S.Auftraege.save(rec, { keep: true });
+        var r = adoptFrom(out, sent);
+        base = M.snapshot(out);
+        pendingSave = Object.keys(r.kept).length > 0;
+        if (pendingSave) saving();
+        if (left) return;
+        showChanges(r.changed);
+        setSaveState('Gespeichert ' + fmtTime(Date.now()));
+        drawStatus();
+        if (rerenderLater && !busyNow()) { rerenderLater = false; router(); }
+      } finally {
+        persisting = false;
+        if (persistAgain) { persistAgain = false; persist(); }
+        else if (remoteAgain) { remoteAgain = false; onRemote(); }
       }
-      await S.Auftraege.save(rec);
-      base = snapEd(rec);
-      pendingSave = false;
-      if (left) return;
-      setSaveState('Gespeichert ' + fmtTime(Date.now()));
-      drawStatus();
-      if (rerenderLater && !busyNow()) { rerenderLater = false; router(); }
     }
+    var persistAgain = false;
     var saving = debounce(persist, 500);
     function markChanged() {
       if (rec.status === 'fertig') rec.needsRefile = true;
@@ -951,10 +1061,10 @@
         rec.office = Object.assign({}, rec.office || {});
         if (shared) { rec.office.shared = false; toast('Fürs Büro nicht mehr sichtbar'); }
         else { rec.office.shared = true; rec.office.sharedAt = Date.now(); toast('Ans Büro geschickt'); }
-        await S.Auftraege.save(rec);
+        await persist();
         drawStatus();
       };
-      $('#preview').onclick = async function () { await S.Auftraege.save(rec); showAuftragPdf([rec]); };
+      $('#preview').onclick = async function () { await persist(); showAuftragPdf([rec]); };
       $('#del').onclick = async function () {
         var ok = await confirmBox('Auftrag löschen?', 'Der Auftrag wird auf allen Geräten entfernt.' + (rec.drive ? ' Das bereits abgelegte PDF in der Kundendatenbank bleibt erhalten.' : ''), 'Löschen', true);
         if (!ok) return;
@@ -1003,10 +1113,11 @@
       if (!rec.zeiten.length) {
         var s = await S.Settings.get();
         var prof = await S.Profile.get();
-        rec.zeiten.push({ datum: (rec.ablage && rec.ablage.datum) || S.isoDate(new Date()), monteur: prof.monteurName || s.deviceName || '', stunden: '' });
+        if (!rec.zeiten.length) rec.zeiten.push({ datum: (rec.ablage && rec.ablage.datum) || S.isoDate(new Date()), monteur: prof.monteurName || s.deviceName || '', stunden: '' });
       }
+      window.RecMerge.ensureIds(rec);
       box.innerHTML = rec.zeiten.map(function (z, i) {
-        return '<div class="zeit-row"><input type="date" data-z="' + i + '" data-k="datum" value="' + esc(z.datum) + '">' +
+        return '<div class="zeit-row" data-rid="' + esc(z.id || '') + '"><input type="date" data-z="' + i + '" data-k="datum" value="' + esc(z.datum) + '">' +
           '<input data-z="' + i + '" data-k="monteur" list="monteure" value="' + esc(z.monteur) + '" placeholder="Monteur" autocomplete="off">' +
           '<input data-z="' + i + '" data-k="stunden" inputmode="decimal" value="' + esc(z.stunden) + '" placeholder="z. B. 2,5">' +
           '<button type="button" class="del" data-zdel="' + i + '" aria-label="Zeile löschen">' + ICONS.close + '</button></div>';
@@ -1030,7 +1141,7 @@
     }
     $('#addZeit').onclick = function () {
       var last = rec.zeiten[rec.zeiten.length - 1] || {};
-      rec.zeiten.push({ datum: last.datum || S.isoDate(new Date()), monteur: '', stunden: '' });
+      rec.zeiten.push({ id: S.uid('z-'), datum: last.datum || S.isoDate(new Date()), monteur: '', stunden: '' });
       drawZeiten();
     };
 
@@ -1170,32 +1281,62 @@
     function onBlur() { setTimeout(function () { if (rerenderLater && !left && !busyNow()) { rerenderLater = false; router(); } }, 300); }
     view.addEventListener('focusout', onBlur);
     onCleanup(function () { view.removeEventListener('focusout', onBlur); });
-    // Änderungen von anderen Geräten übernehmen (nur wenn gerade nicht getippt/unterschrieben wird)
-    function editable(r) { return JSON.stringify([r.f, r.material, r.sig || {}, r.customerId, r.ablage, r.status, r.zeiten || []]); }
-    rerenderOn(['auftraege'], async function () {
+    // Änderungen von anderen Geräten übernehmen – eigene, noch nicht gespeicherte Eingaben bleiben stehen
+    async function onRemote() {
+      if (left) return;
+      if (persisting) { remoteAgain = true; return; }
       var fresh = await S.Auftraege.get(rec.id);
-      if (!fresh) return;
+      if (!fresh || left) return;
       if (fresh.deleted) { toast('Auftrag wurde auf einem anderen Gerät gelöscht'); location.hash = '#/auftraege'; return; }
-      var busy = busyNow();
-      if (fresh.updatedAt > rec.updatedAt && editable(fresh) !== editable(rec) && !fresh._dirty && !busy) {
-        router();
+      if (persisting) { remoteAgain = true; return; }
+      // geändert = Inhalt weicht vom Ausgangsstand dieser Seite ab (Zeitstempel allein reicht nicht: zusammengeführte Stände)
+      var remote = M.changedKeys(fresh, base).length > 0 || JSON.stringify(fresh.cf || {}) !== JSON.stringify(rec.cf || {});
+      if (remote) {
+        var edits = M.changedKeys(rec, base).length > 0;
+        if (!edits && !busyNow()) { router(); return; }
+        var photosBefore = JSON.stringify(rec.photos || []);
+        var r = adoptFrom(fresh, base.flat);
+        // neue Basis: übernommene Felder vom neuen Stand, eigene Eingaben behalten ihre alte Basis (Konflikt-Erkennung)
+        var nb = M.snapshot(fresh);
+        Object.keys(r.kept).forEach(function (k) {
+          if (k in base.flat) nb.flat[k] = base.flat[k]; else delete nb.flat[k];
+          if (base.ts[k]) nb.ts[k] = base.ts[k]; else delete nb.ts[k];
+        });
+        base = nb;
+        if (photosBefore !== JSON.stringify(rec.photos || [])) drawPhotos();
+        showChanges(r.changed);
         return;
       }
-      // während getippt/unterschrieben wird: Änderungen des anderen Geräts einarbeiten statt sie zu überschreiben
-      if (fresh.updatedAt > rec.updatedAt) { if (mergeRemote(fresh)) rerenderLater = true; }
-      else {
-        var ms = S.mergeSig(rec.sig, fresh.sig);
-        if (JSON.stringify(ms) !== JSON.stringify(rec.sig || {})) { rec.sig = ms; drawSigs(); }
-      }
+      var ms = S.mergeSig(rec.sig, fresh.sig);
+      if (JSON.stringify(ms) !== JSON.stringify(rec.sig || {})) { rec.sig = ms; drawSigs(); }
       rec.drive = fresh.drive;
       rec.office = mergeOffice(rec, fresh);
       var photosChanged = JSON.stringify(rec.photos || []) !== JSON.stringify(fresh.photos || []);
       rec.photos = fresh.photos || [];
+      rec.photosDel = fresh.photosDel;
       if (photosChanged) drawPhotos();
-      if (rec.customerId && rec.customerId.indexOf('tmp-') === 0 && fresh.customerId && fresh.customerId.indexOf('tmp-') !== 0) rec.customerId = fresh.customerId;
       if (rec.needsRefile && !fresh.needsRefile && fresh.updatedAt >= rec.updatedAt) rec.needsRefile = false;
       drawStatus();
-    });
+    }
+    rerenderOn(['auftraege'], onRemote);
+
+    // ---- Gleichzeitig geändert: Hinweis mit beiden Fassungen ----
+    var CF_LABELS = { auftrags_nr: 'Auftrags-Nr.', datum_annahme: 'Datum der Annahme', kunde_name: 'Name / Firma', kunde_name_zusatz: 'Zusatz',
+      kunde_adresse: 'Adresse', art: 'Art des Auftrags', arbeitsumfang: 'Arbeitsumfang', ort_datum: 'Ort, Datum',
+      datum_fertigstellung: 'Ort, Datum (Materialschein)', 'ablage.datum': 'Termin-Datum (Ordner)', 'ablage.art': 'Art (Ordnername)',
+      m: { _: 'Materialschein', artnr: 'Artikel-Nr.', bez: 'Bezeichnung', einheit: 'Einheit', menge: 'Menge', preis: 'Einzelpreis', gesamt: 'Gesamtpreis' },
+      z: { _: 'Arbeitszeit', datum: 'Datum', monteur: 'Monteur', stunden: 'Stunden' } };
+    function drawConf() {
+      conflictBox($('#cfBox'), rec, CF_LABELS, {
+        apply: function (c) {
+          if (!M.setValue(rec, c.k, c.v)) { toast('Die Zeile gibt es nicht mehr', true); return false; }
+          showChanges([c.k]);
+          return true;
+        },
+        save: function () { markChanged(); }
+      });
+    }
+    drawConf();
   }, 'auftraege');
 
   // ------------------------------------------------------------------
@@ -1228,6 +1369,7 @@
       function pos(e) { var r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
       canvas.addEventListener('pointerdown', function (e) {
         e.preventDefault();
+        if (!ctx) size(); // Fläche noch nicht vorbereitet (sehr schnelles Antippen)
         canvas.setPointerCapture(e.pointerId);
         drawing = true; last = pos(e); mid = last;
         ctx.beginPath(); ctx.arc(last.x, last.y, 1.2, 0, Math.PI * 2); ctx.fillStyle = '#111'; ctx.fill();
@@ -1854,6 +1996,7 @@
     debounce: debounce, matchQuery: matchQuery, auftragTitle: auftragTitle, auftragDate: auftragDate, officeStatus: officeStatus,
     auftragStatus: auftragStatus, showAuftragPdf: showAuftragPdf, openCustomerPicker: openCustomerPicker, parseCustomer: parseCustomer, rerenderOn: rerenderOn,
     onCleanup: onCleanup, current: function () { return current; }, renderPushBox: renderPushBox, isIOS: isIOS, fileIcon: fileIcon,
-    openViewer: openViewer, printBlob: printBlob, downloadBlob: downloadBlob, inputBox: inputBox, applyCustomer: applyCustomer
+    openViewer: openViewer, printBlob: printBlob, downloadBlob: downloadBlob, inputBox: inputBox, applyCustomer: applyCustomer,
+    conflictBox: conflictBox
   };
 })();
