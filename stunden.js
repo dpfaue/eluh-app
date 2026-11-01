@@ -93,8 +93,8 @@
   // ------------------------------------------------------------------
   U.route(/^#\/stunden$/, async function () {
     var s = await S.Settings.get();
-    if (s.role === 'buero') { U.view.innerHTML = '<div class="empty">Nur für Dominic.</div>'; return; }
-    U.view.innerHTML = '<div class="page-head"><h1>Stundenzettel</h1><div class="sub">Arbeitszeitnachweis · Pfaue, Dominic</div></div>' +
+    var RO = s.role === 'buero';
+    U.view.innerHTML = '<div class="page-head"><h1>Stundenzettel</h1><div class="sub">Arbeitszeitnachweis · Pfaue, Dominic' + (RO ? ' · nur Ansicht' : '') + '</div></div>' +
       '<div id="szCur"></div><div id="szOpen"><div class="empty"><span class="spinner"></span> Wird geladen…</div></div><div id="szHist"></div>';
     var me = U.current(), year = null;
 
@@ -106,15 +106,16 @@
       var c = j.current || {};
       $('#szCur').innerHTML = (j.offline ? '<div class="notice warn small">Offline – zuletzt geladener Stand.</div>' : '') +
         (c.id ? '<div class="card pad sz-current"><div class="small muted">Diese Woche</div><div class="sz-cur-name">' + esc(c.name) + '</div>' +
-          '<div class="btn-row"><a class="btn primary" href="#/stunden/' + esc(c.id) + '">Öffnen</a></div></div>' :
+          '<div class="btn-row"><a class="btn primary" href="#/stunden/' + esc(c.id) + '">' + (RO ? 'Ansehen' : 'Öffnen') + '</a></div></div>' :
           '<div class="card pad sz-current"><div class="small muted">Diese Woche</div><div class="sz-cur-name">' + esc(c.name || '') + '</div>' +
+          (RO ? '<div class="small">Noch kein Zettel für diese Woche.</div>' :
           '<div class="small">Noch kein Zettel – wird jeden Montag (und am Monatsersten) automatisch aus dem Blanko angelegt.</div>' +
-          '<div class="btn-row"><button type="button" class="btn primary" id="szMake">' + U.ICONS.plus + '<span>Jetzt anlegen</span></button></div></div>');
+          '<div class="btn-row"><button type="button" class="btn primary" id="szMake">' + U.ICONS.plus + '<span>Jetzt anlegen</span></button></div>') + '</div>');
       var mk = $('#szMake');
       if (mk) mk.onclick = function () { doCreate(mk, function (it) { if (it) location.hash = '#/stunden/' + it.id; else draw(); }); };
 
-      $('#szOpen').innerHTML = '<h2>Offen' + (j.open.length ? ' <span class="badge warn">' + j.open.length + '</span>' : '') + '</h2>' +
-        '<div class="list">' + (j.open.map(function (it) { return row(it, true); }).join('') || '<div class="empty">Alles abgelegt ✓</div>') + '</div>';
+      $('#szOpen').innerHTML = '<h2>' + (RO ? 'Aktuell' : 'Offen') + (j.open.length ? ' <span class="badge warn">' + j.open.length + '</span>' : '') + '</h2>' +
+        '<div class="list">' + (j.open.map(function (it) { return row(it, !RO); }).join('') || '<div class="empty">' + (RO ? 'Nichts offen.' : 'Alles abgelegt ✓') + '</div>') + '</div>';
       $$('[data-done]', $('#szOpen')).forEach(function (b) {
         b.onclick = function () { var it = j.open.filter(function (x) { return x.id === b.getAttribute('data-done'); })[0]; doDone(it, function () { draw(); }); };
       });
@@ -327,7 +328,7 @@
 
   U.route(/^#\/stunden\/([\w-]+)$/, async function (id) {
     var s = await S.Settings.get();
-    if (s.role === 'buero') { U.view.innerHTML = '<div class="empty">Nur für Dominic.</div>'; return; }
+    var RO = s.role === 'buero';
     U.view.innerHTML = '<div class="page-head"><a class="btn ghost small" href="#/stunden">‹ Stundenzettel</a><h1 id="szName">Stundenzettel</h1><div class="sub" id="szSub"></div></div>' +
       '<div class="btn-row sz-actions" id="szAct"></div><div id="szBody"><div class="empty"><span class="spinner"></span> Wird geladen…</div></div>';
     var me = U.current();
@@ -337,6 +338,12 @@
 
     function actions(v) {
       if (!$('#szAct')) return;
+      if (RO) {
+        $('#szAct').innerHTML = '<button type="button" class="btn" id="szPrint">' + U.ICONS.print + '<span>Drucken</span></button>';
+        var itRo = Object.assign({}, item, v ? { name: v.name, modified: v.modified } : {});
+        $('#szPrint').onclick = function () { doPrint(itRo, this); };
+        return;
+      }
       $('#szAct').innerHTML =
         '<a class="btn" target="_blank" rel="noopener" href="' + esc((v && v.editUrl) || 'https://docs.google.com/spreadsheets/d/' + id + '/edit') + '">' + U.ICONS.pen + '<span>Bearbeiten</span></a>' +
         '<button type="button" class="btn" id="szPrint">' + U.ICONS.print + '<span>Drucken</span></button>' +
