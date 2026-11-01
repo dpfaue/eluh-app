@@ -428,7 +428,7 @@
   var routes = [];
   function route(re, fn, tab) { routes.push({ re: re, fn: fn, tab: tab }); }
 
-  var CHEF_ONLY = /^#\/(auftraege|auftrag\/|sync|stunden|nachfolge)/;
+  var CHEF_ONLY = /^#\/(auftraege|auftrag\/|sync|nachfolge)/;
   async function router() {
     var s = await S.Settings.get();
     var isBuero = s.role === 'buero';
