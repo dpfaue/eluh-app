@@ -714,7 +714,7 @@
       '<div class="btn-row" style="margin-top:10px">' +
       '<label class="btn">' + ICONS.camera + '<span>Foto aufnehmen</span><input type="file" accept="image/*" capture="environment" id="phCam" hidden></label>' +
       '<label class="btn">' + ICONS.upload + '<span>Aus Mediathek</span><input type="file" accept="image/*" multiple id="phLib" hidden></label></div>' +
-      '<p class="small muted" style="margin:8px 2px 0">Fotos landen automatisch im Terminordner beim Kunden (gleicher Ordner wie das Auftrags-PDF).</p></section>' +
+      '<p class="small muted" style="margin:8px 2px 0">Fotos werden sofort gesichert und kommen beim Ablegen in den Terminordner beim Kunden (gleicher Ordner wie das Auftrags-PDF).</p></section>' +
       '<section class="form-section"><h3>Unterschriften</h3><div class="sig-grid"><div class="sig-card" id="sigKunde"></div><div class="sig-card" id="sigMonteur"></div></div></section>' +
       '<section class="form-section"><h3>Ablage in der Kundendatenbank</h3><div class="stack">' +
       '<div class="grid2"><label class="field"><span>Termin-Datum (Ordner)</span><input type="date" data-ablage="datum" value="' + esc(rec.ablage.datum) + '"></label>' +
@@ -1156,7 +1156,7 @@
       if (!photos.length) { grid.innerHTML = '<div class="small muted">Noch keine Fotos.</div>'; return; }
       grid.innerHTML = photos.map(function (ph) {
         var op = ops.filter(function (o) { return o.type === 'uploadPhoto' && o.photoId === ph.id; })[0];
-        var st = ph.fileId ? '<span class="ph-st ok">✓</span>' : (!rec.customerId && rec.status !== 'fertig') ? '<span class="ph-st warn">wartet auf Kunde</span>' : '<span class="ph-st warn">wird hochgeladen</span>';
+        var st = ph.fileId ? '<span class="ph-st ok">✓</span>' : '<span class="ph-st warn">wird hochgeladen</span>';
         return '<div class="ph" data-ph="' + esc(ph.id) + '"><div class="ph-img"></div>' + st +
           '<button type="button" class="ph-del" data-phdel="' + esc(ph.id) + '" aria-label="Foto entfernen">' + ICONS.close + '</button></div>';
       }).join('');
@@ -1183,7 +1183,7 @@
         b.onclick = async function () {
           var id = b.getAttribute('data-phdel');
           var ph = (rec.photos || []).filter(function (x) { return x.id === id; })[0];
-          var ok = await confirmBox('Foto entfernen?', ph && ph.fileId ? 'Das Foto wird aus dem Auftrag entfernt. Im Kundenordner in Google Drive bleibt es erhalten.' : 'Das Foto wurde noch nicht hochgeladen und wird verworfen.', 'Entfernen', true);
+          var ok = await confirmBox('Foto entfernen?', ph && ph.fileId ? 'Das Foto wird aus dem Auftrag entfernt. In Google Drive bleibt es erhalten.' : 'Das Foto wurde noch nicht hochgeladen und wird verworfen.', 'Entfernen', true);
           if (!ok) return;
           await S.removeAuftragPhoto(rec, id);
           drawPhotos();
@@ -1195,7 +1195,6 @@
       if (!files.length) return;
       for (var i = 0; i < files.length; i++) await S.addAuftragPhoto(rec, files[i], { camera: camera });
       toast(files.length === 1 ? 'Foto gespeichert' : files.length + ' Fotos gespeichert');
-      if (!rec.customerId) toast('Fotos werden hochgeladen, sobald ein Kunde gewählt ist');
       drawPhotos();
     }
     $('#phCam').onchange = function () { addPhotos(this.files, true); this.value = ''; };

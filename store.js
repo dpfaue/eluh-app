@@ -596,16 +596,19 @@
       if (!prec || prec.deleted) { await DB.del('files', op.photoId); return; }
       var ph = (prec.photos || []).filter(function (x) { return x.id === op.photoId; })[0];
       if (!ph) return;
-      if (!prec.customerId && prec.status !== 'fertig') throw waitErr('Wartet auf Kundenauswahl im Auftrag');
-      var pc = await IdMap.resolve(prec.customerId);
-      if (pc && pc.indexOf('tmp-') === 0) throw waitErr();
       var pf = await Files.get(op.photoId);
       if (!pf) return;
+      // Ab 2.8: Fotos kommen erst beim Ablegen in den Kundenordner. Vorher liegen sie im Zwischenordner
+      // „ELUH-App Daten › Fotos – noch nicht abgelegt“ – ein falsch gewählter Kunde kann so nichts mehr verteilen.
+      // Ist der Auftrag schon abgelegt (und nicht geändert), geht das Foto direkt in dessen Ordner.
+      var filedFolder = prec.status === 'fertig' && !prec.needsRefile && prec.drive && prec.drive.folderId ? prec.drive.folderId : null;
       var r5 = await api('uploadToPath', {
-        customerId: pc || null,
-        segments: pc ? window.PdfGen.folderSegments(prec) : [],
+        pid: ph.pid || op.photoId,
+        stage: !filedFolder,
+        folderId: filedFolder,
         name: ph.name, mime: pf.mime, data: await blobToBase64(pf.blob)
       }, { timeout: 180000 });
+      var pc = filedFolder ? await IdMap.resolve(prec.customerId) : null;
       await IdMap.set(op.photoId, r5.fileId);
       pf.id = r5.fileId;
       await Files.put(pf);
