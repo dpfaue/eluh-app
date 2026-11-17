@@ -329,8 +329,110 @@
     return (await buildStundenDoc(rec)).save();
   }
 
+  // ------------------------------------------------------------------
+  // Angebotsanfrage (eigenes, schlichtes A4-PDF fürs Büro; längerer Text läuft auf Seite 2, 3 … weiter)
+  // ------------------------------------------------------------------
+  function isAngebot(rec) { return !!rec && (rec.kind === 'angebot' || (rec.f && rec.f.typ === 'angebot')); }
+
+  var FOOTER = ['Tel.: 033971/ 8739-0     Fax.: 033971/ 8739-17     email: info@eluhkyritz.de     www.eluhkyritz.de',
+    'Sparkasse Ostprignitz Ruppin     BIC WELADED1OPR     IBAN DE41 1605 0202 1520 00226 17',
+    'Amtsgericht Neuruppin     HRB-NR 729     St-Nr. 052/108/00974     Geschäftsführer: Toral Horn'];
+
+  async function buildAngebotDoc(rec) {
+    var L = window.PDFLib;
+    var doc = await L.PDFDocument.create();
+    var font = await doc.embedFont(L.StandardFonts.Helvetica);
+    var bold = await doc.embedFont(L.StandardFonts.HelveticaBold);
+    var grey = L.rgb(0.25, 0.25, 0.25), ink = L.rgb(0.08, 0.08, 0.08), rule = L.rgb(0.5, 0.5, 0.5);
+    var W = 595.2756, H = 841.8898, M = 40, BOTTOM = 92; // unterhalb von BOTTOM steht nur die Fußzeile
+    var T = function (t) { return sanitize(font, t); };
+    var f = rec.f || {};
+    var kunde = [f.kunde_name, f.kunde_name_zusatz].filter(Boolean).join(', ') || rec.customerName || '';
+    var img = await doc.embedPng(await logo());
+    var pages = [], page, y;
+
+    function footer(pg) {
+      pg.drawLine({ start: { x: M, y: 70 }, end: { x: W - M, y: 70 }, thickness: 0.8, color: L.rgb(0.7, 0.7, 0.7) });
+      FOOTER.forEach(function (t, i) {
+        var tt = T(t);
+        pg.drawText(tt, { x: (W - font.widthOfTextAtSize(tt, 7)) / 2, y: 60 - i * 9, size: 7, font: font, color: L.rgb(0.35, 0.35, 0.35) });
+      });
+    }
+    function firstPage() {
+      page = doc.addPage([W, H]); pages.push(page);
+      var lw = W - 2 * M, lh = lw * 129 / 654, ly = H - 28 - lh;
+      page.drawImage(img, { x: M, y: ly, width: lw, height: lh });
+      var ry = ly - 12;
+      page.drawLine({ start: { x: M, y: ry }, end: { x: W - M, y: ry }, thickness: 1, color: rule });
+      y = ry - 30;
+      page.drawText('Angebotsanfrage', { x: M, y: y, size: 13, font: bold, color: grey });
+      y -= 28;
+      [['Kunde', kunde || '–'], ['Adresse', f.kunde_adresse || '–'], ['Datum', fmtDate(f.datum_annahme) || '–']].forEach(function (row) {
+        page.drawText(row[0], { x: M, y: y, size: 8, font: font, color: grey });
+        var lines = wrap(font, T(row[1]).replace(/\n+/g, ', '), 10, W - 2 * M - 110);
+        lines.slice(0, 2).forEach(function (ln, i) { page.drawText(ln, { x: M + 110, y: y - i * 13, size: 10, font: font, color: ink }); });
+        y -= 18 + (Math.min(lines.length, 2) - 1) * 13;
+      });
+      y -= 10;
+      footer(page);
+    }
+    function nextPage() {
+      page = doc.addPage([W, H]); pages.push(page);
+      y = H - 50;
+      page.drawText(T('Angebotsanfrage' + (kunde ? ' – ' + kunde : '')), { x: M, y: y, size: 10, font: bold, color: grey, maxWidth: W - 2 * M - 80 });
+      page.drawLine({ start: { x: M, y: y - 8 }, end: { x: W - M, y: y - 8 }, thickness: 0.8, color: rule });
+      y -= 34;
+      footer(page);
+    }
+    var SIZE = 10.5, LH = 14.5;
+    function section(title, text, bullets) {
+      var lines = [];
+      String(text || '').replace(/\r\n?/g, '\n').split('\n').forEach(function (para) {
+        if (bullets) {
+          if (!para.trim()) return;
+          wrap(font, T(para.trim()), SIZE, W - 2 * M - 14).forEach(function (ln, i) { lines.push({ t: ln, x: M + 14, dot: i === 0 }); });
+        } else {
+          wrap(font, T(para), SIZE, W - 2 * M).forEach(function (ln) { lines.push({ t: ln, x: M }); });
+        }
+      });
+      while (lines.length && !lines[lines.length - 1].t.trim()) lines.pop();
+      if (!lines.length) lines.push({ t: '–', x: M });
+      // Überschrift nie allein unten auf der Seite
+      if (y - 22 - LH < BOTTOM) nextPage();
+      page.drawText(title, { x: M, y: y, size: 11, font: bold, color: ink });
+      page.drawLine({ start: { x: M, y: y - 5 }, end: { x: W - M, y: y - 5 }, thickness: 0.6, color: L.rgb(0.75, 0.75, 0.75) });
+      y -= 22;
+      lines.forEach(function (ln) {
+        if (y < BOTTOM) {
+          nextPage();
+          page.drawText(T(title + ' (Fortsetzung)'), { x: M, y: y, size: 9, font: bold, color: grey });
+          y -= 18;
+        }
+        if (ln.dot) page.drawText('•', { x: M + 3, y: y, size: SIZE, font: font, color: ink });
+        if (ln.t) page.drawText(ln.t, { x: ln.x, y: y, size: SIZE, font: font, color: ink });
+        y -= LH;
+      });
+      y -= 16;
+    }
+    firstPage();
+    section('Was soll gemacht werden', f.angebot_text, false);
+    section('Material', f.angebot_material, true);
+    if (pages.length > 1) {
+      pages.forEach(function (pg, i) {
+        var t = 'Seite ' + (i + 1) + ' von ' + pages.length;
+        pg.drawText(t, { x: W - M - font.widthOfTextAtSize(t, 8), y: 78, size: 8, font: font, color: grey });
+      });
+    }
+    doc.setTitle(T('Angebotsanfrage' + (kunde ? ' – ' + kunde : '')));
+    doc.setAuthor('eluh Anlagen Kyritz GmbH');
+    doc.setCreator('ELUH App');
+    doc.setProducer('ELUH App');
+    return doc;
+  }
+
   /** Auftrag + (falls vorhanden) Stundennachweis in einem Dokument – fürs Drucken */
   async function buildFullDoc(rec) {
+    if (isAngebot(rec)) return buildAngebotDoc(rec);
     var d = await buildDoc(rec);
     if (hasZeiten(rec)) {
       var sd = await buildStundenDoc(rec);
@@ -374,6 +476,11 @@
 
   function fileName(rec) {
     var f = rec.f || {};
+    if (isAngebot(rec)) {
+      var ad = dmY(f.datum_annahme);
+      var kn = String(f.kunde_name || '').trim().replace(/[\/\\:*?"<>|]/g, '-').slice(0, 40);
+      return 'Angebotsanfrage' + (kn ? ' ' + kn : '') + (ad ? ' ' + ad.d + '.' + ad.m + '.' + ad.y : '') + '.pdf';
+    }
     var nr = String(f.auftrags_nr || '').trim().replace(/[\/\\:*?"<>|]/g, '-');
     var d = dmY((rec.ablage || {}).datum) || dmY(f.datum_annahme);
     var tail = nr ? nr : (d ? d.d + '.' + d.m + '.' + d.y : '');
@@ -382,6 +489,6 @@
 
   window.PdfGen = {
     build: build, buildFull: buildFull, buildStunden: buildStunden, hasZeiten: hasZeiten, hasMaterial: hasMaterial, stundenName: stundenName,
-    merge: merge, folderSegments: folderSegments, fileName: fileName, fmtDate: fmtDate, sumZeiten: function (rec) { return fmtNum(zeitRows(rec).reduce(function (a, z) { return a + num(z.stunden); }, 0)); }
+    merge: merge, folderSegments: folderSegments, fileName: fileName, isAngebot: isAngebot, fmtDate: fmtDate, sumZeiten: function (rec) { return fmtNum(zeitRows(rec).reduce(function (a, z) { return a + num(z.stunden); }, 0)); }
   };
 })();
