@@ -1,7 +1,7 @@
 /* ELUH App – Service Worker: hält die App offline verfügbar und zeigt Push-Mitteilungen */
-var VERSION = 'eluh-v2.8.0';
+var VERSION = 'eluh-v2.9.0';
 var FILES = [
-  './', 'index.html', 'app.css', 'app.js', 'store.js', 'pdfgen.js', 'offline.js', 'termine.js', 'buero.js', 'geraete.js', 'heute.js', 'stunden.js', 'nachfolge.js', 'names.js', 'merge.js', 'config.js',
+  './', 'index.html', 'app.css', 'app.js', 'store.js', 'pdfgen.js', 'offline.js', 'termine.js', 'buero.js', 'geraete.js', 'heute.js', 'stunden.js', 'nachfolge.js', 'angebot.js', 'names.js', 'merge.js', 'config.js',
   'jsqr.min.js', 'qrcode.min.js',
   'pdf-lib.min.js', 'pdf.min.js', 'pdf.worker.min.js', 'vorlage-arbeitsauftrag.pdf',
   'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png', 'logo.png'
