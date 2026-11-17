@@ -208,7 +208,9 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: v
 .mat-head { font-size: 12px; font-weight: 700; color: var(--ink-3); padding-bottom: 0; }
 .mat-row input { width: 100%; border: 1px solid var(--line-strong); background: var(--surface); border-radius: 7px; padding: 8px; font-size: 15px; min-height: 40px; }
 .mat-row .del { border: 0; background: none; color: var(--ink-3); height: 40px; }
+.mat-row.ag-mat { grid-template-columns: 1.2fr 2.6fr .8fr 1fr 36px; }
 @media (max-width: 700px) {
+  .mat-row.ag-mat { grid-template-columns: 1fr 1fr 1fr; }
   .mat-head { display: none; }
   .mat-row { grid-template-columns: 1fr 1fr 1fr; border: 1px solid var(--line); border-radius: 10px; padding: 8px; margin-bottom: 8px; position: relative; }
   .mat-row input[data-k=bez] { grid-column: 1 / -1; }
