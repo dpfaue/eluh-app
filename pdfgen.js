@@ -414,9 +414,48 @@
       });
       y -= 16;
     }
+    /** Material als Tabelle wie im Materialschein: Art.-Nr. | Bezeichnung | Menge | Preis */
+    function matTable(rows) {
+      var cols = [{ k: 'artnr', t: 'Art.-Nr.', x: M, w: 95 }, { k: 'bez', t: 'Bezeichnung', x: M + 100, w: 285 },
+        { k: 'menge', t: 'Menge', x: M + 390, w: 55, r: true }, { k: 'preis', t: 'Preis €', x: M + 450, w: W - 2 * M - 450, r: true }];
+      function head(cont) {
+        page.drawText(cont ? 'Material (Fortsetzung)' : 'Material', { x: M, y: y, size: cont ? 9 : 11, font: bold, color: cont ? grey : ink });
+        y -= 20;
+        cols.forEach(function (c) {
+          var tw = bold.widthOfTextAtSize(c.t, 8.5);
+          page.drawText(c.t, { x: c.r ? c.x + c.w - tw : c.x, y: y, size: 8.5, font: bold, color: grey });
+        });
+        page.drawLine({ start: { x: M, y: y - 5 }, end: { x: W - M, y: y - 5 }, thickness: 0.6, color: L.rgb(0.6, 0.6, 0.6) });
+        y -= 19;
+      }
+      if (y - 40 - LH < BOTTOM) nextPage();
+      head(false);
+      rows.forEach(function (m) {
+        var cells = cols.map(function (c) {
+          var t = T(String(m[c.k] || '').trim()).replace(/\n+/g, ' ');
+          return c.r ? [t] : wrap(font, t, 10, c.w - 4);
+        });
+        var n = Math.max.apply(null, cells.map(function (l) { return l.length; }));
+        var h = n * 13 + 6;
+        if (y - h + 13 < BOTTOM) { nextPage(); head(true); }
+        cols.forEach(function (c, ci) {
+          cells[ci].forEach(function (ln, li) {
+            var size = 10;
+            if (c.r) { while (size > 6.5 && font.widthOfTextAtSize(ln, size) > c.w) size -= 0.5; }
+            var tx = c.r ? c.x + c.w - font.widthOfTextAtSize(ln, size) : c.x;
+            page.drawText(ln, { x: tx, y: y - li * 13, size: size, font: font, color: ink });
+          });
+        });
+        page.drawLine({ start: { x: M, y: y - h + 9 }, end: { x: W - M, y: y - h + 9 }, thickness: 0.4, color: L.rgb(0.82, 0.82, 0.82) });
+        y -= h;
+      });
+      y -= 12;
+    }
     firstPage();
     section('Was soll gemacht werden', f.angebot_text, false);
-    section('Material', f.angebot_material, true);
+    var mrows = (rec.material || []).filter(function (m) { return m && ['artnr', 'bez', 'menge', 'preis'].some(function (k) { return String(m[k] || '').trim(); }); });
+    if (mrows.length) matTable(mrows);
+    else section('Material', f.angebot_material, true); // ältere Angebote mit Freitext
     if (pages.length > 1) {
       pages.forEach(function (pg, i) {
         var t = 'Seite ' + (i + 1) + ' von ' + pages.length;
