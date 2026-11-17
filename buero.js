@@ -53,7 +53,7 @@
       var rows = list.filter(function (r) {
         if (state.tab !== 'alle' && statusOf(r) !== state.tab) return false;
         var f = r.f || {};
-        return U.matchQuery([f.kunde_name, f.kunde_adresse, f.auftrags_nr, f.art, r.customerName, f.angebot_text, f.angebot_material].join(' '), state.q);
+        return U.matchQuery([f.kunde_name, f.kunde_adresse, f.auftrags_nr, f.art, r.customerName, f.angebot_text, f.angebot_material, (r.material || []).map(function (m) { return [m.artnr, m.bez].join(' '); }).join(' ')].join(' '), state.q);
       });
       var ang = rows.filter(isAng).sort(function (a, b) {
         var pa = a.office && a.office.printedAt ? 1 : 0, pb = b.office && b.office.printedAt ? 1 : 0;
@@ -159,6 +159,17 @@
         } catch (e) { U.toast('Nur mit Internet möglich: ' + e.message, true); }
       };
     }
+    function matHtml(r, f, pre) {
+      var rows = (r.material || []).filter(function (m) { return m && ['artnr', 'bez', 'menge', 'preis'].some(function (k) { return String(m[k] || '').trim(); }); });
+      if (!rows.length) return pre(f.angebot_material);
+      var td = 'style="padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top"';
+      var tr = 'style="padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top;text-align:right;white-space:nowrap"';
+      return '<div class="card pad" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:14px">' +
+        '<thead><tr><th ' + td + ' align="left">Art.-Nr.</th><th ' + td + ' align="left">Bezeichnung</th><th ' + tr + '>Menge</th><th ' + tr + '>Preis €</th></tr></thead><tbody>' +
+        rows.map(function (m) {
+          return '<tr><td ' + td + '>' + esc(m.artnr || '') + '</td><td ' + td + '>' + esc(m.bez || '') + '</td><td ' + tr + '>' + esc(m.menge || '') + '</td><td ' + tr + '>' + esc(m.preis || '') + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    }
     function drawAng(r, f, o) {
       var pre = function (t) { return String(t || '').trim() ? '<div class="card pad" style="white-space:pre-wrap">' + esc(t) + '</div>' : '<div class="card pad muted">–</div>'; };
       U.view.innerHTML =
@@ -174,7 +185,7 @@
         '<dt>Erledigt</dt><dd>' + (o.billedAt ? U.fmtDT(o.billedAt) + (o.billedBy ? ' (' + esc(o.billedBy) + ')' : '') : 'noch nicht') + '</dd>' +
         '</dl></div>' +
         '<h2>Was soll gemacht werden</h2>' + pre(f.angebot_text) +
-        '<h2>Material</h2>' + pre(f.angebot_material) +
+        '<h2>Material</h2>' + matHtml(r, f, pre) +
         (r.customerId ? '<p><a class="btn ghost" href="#/ordner/' + encodeURIComponent(r.customerId) + '">' + U.ICONS.folder.replace('<svg', '<svg width="18" height="18"') + '<span>Kundenordner öffnen</span></a></p>' : '');
       $('#bPrint').onclick = function () { U.showAuftragPdf([r], { onPrint: function () { markPrinted([r]); } }); };
       $('#bBill').onclick = async function () {
