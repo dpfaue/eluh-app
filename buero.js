@@ -12,6 +12,10 @@
     return 'neu';
   }
   var BADGE = { neu: '<span class="badge warn">Neu</span>', gedruckt: '<span class="badge info">Gedruckt</span>', abgerechnet: '<span class="badge ok">Abgerechnet</span>' };
+  // Angebotsanfragen von Dominic: stehen immer oben; „abgerechnet“ heißt hier „Angebot fertig geschrieben“
+  function isAng(r) { return window.PdfGen.isAngebot(r); }
+  function badge(r) { return isAng(r) && statusOf(r) === 'abgerechnet' ? '<span class="badge ok">Erledigt</span>' : BADGE[statusOf(r)]; }
+  function firstLine(t) { t = String(t || '').trim().split('\n')[0]; return t.length > 70 ? t.slice(0, 68) + '…' : t; }
 
   async function markPrinted(recs) {
     for (var i = 0; i < recs.length; i++) {
@@ -49,20 +53,35 @@
       var rows = list.filter(function (r) {
         if (state.tab !== 'alle' && statusOf(r) !== state.tab) return false;
         var f = r.f || {};
-        return U.matchQuery([f.kunde_name, f.kunde_adresse, f.auftrags_nr, f.art, r.customerName].join(' '), state.q);
+        return U.matchQuery([f.kunde_name, f.kunde_adresse, f.auftrags_nr, f.art, r.customerName, f.angebot_text, f.angebot_material].join(' '), state.q);
       });
+      var ang = rows.filter(isAng).sort(function (a, b) {
+        var pa = a.office && a.office.printedAt ? 1 : 0, pb = b.office && b.office.printedAt ? 1 : 0;
+        return pa - pb || Number((b.office || {}).sharedAt || 0) - Number((a.office || {}).sharedAt || 0);
+      });
+      var auf = rows.filter(function (r) { return !isAng(r); });
+      rows = ang.concat(auf);
       visible = rows;
       if (!rows.length) {
         $('#olist').innerHTML = '<div class="list"><div class="empty">' + (list.length ? 'Hier ist gerade nichts.' : (navigator.onLine ? 'Noch keine Aufträge freigegeben.' : 'Offline – Aufträge werden geladen, sobald Internet da ist.')) + '</div></div>';
       } else {
-        $('#olist').innerHTML = '<div class="list">' + rows.map(function (r) {
+        var rowHtml = function (r) {
           var f = r.f || {};
+          if (isAng(r)) {
+            var am = [U.isoToDe(f.datum_annahme), firstLine(f.angebot_text)].filter(Boolean).join(' · ');
+            return '<div class="row office-row" data-id="' + esc(r.id) + '"><input type="checkbox" aria-label="Auswählen"' + (state.sel.has(r.id) ? ' checked' : '') + '>' +
+              '<a class="main" href="#/buero/' + esc(r.id) + '" style="text-decoration:none;color:inherit"><span class="title" style="display:block">Angebot – ' + esc(U.auftragTitle(r)) + '</span>' +
+              '<span class="meta" style="display:block">' + esc(am) + '</span></a>' + badge(r) + '</div>';
+          }
           var std = window.PdfGen.hasZeiten(r) ? window.PdfGen.sumZeiten(r) + ' Std.' : '';
           var meta = [U.isoToDe(U.auftragDate(r)), f.art, f.auftrags_nr ? 'Nr. ' + f.auftrags_nr : '', std].filter(Boolean).join(' · ');
           return '<div class="row office-row" data-id="' + esc(r.id) + '"><input type="checkbox" aria-label="Auswählen"' + (state.sel.has(r.id) ? ' checked' : '') + '>' +
             '<a class="main" href="#/buero/' + esc(r.id) + '" style="text-decoration:none;color:inherit"><span class="title" style="display:block">' + esc(U.auftragTitle(r)) + '</span>' +
             '<span class="meta" style="display:block">' + esc(meta) + '</span></a>' + BADGE[statusOf(r)] + '</div>';
-        }).join('') + '</div>';
+        };
+        $('#olist').innerHTML = (ang.length ? '<h2 style="margin-top:4px">Angebote</h2><div class="list">' + ang.map(rowHtml).join('') + '</div>' +
+          (auf.length ? '<h2>Aufträge</h2>' : '') : '') +
+          (auf.length ? '<div class="list">' + auf.map(rowHtml).join('') + '</div>' : '');
         $$('#olist .row').forEach(function (row) {
           var cb = $('input', row);
           cb.onchange = function () { var id = row.getAttribute('data-id'); if (cb.checked) state.sel.add(id); else state.sel.delete(id); drawSel(); };
@@ -113,6 +132,7 @@
       if (!r) { U.view.innerHTML = '<div class="notice warn">Auftrag nicht (mehr) freigegeben.</div><p><a href="#/buero">Zur Liste</a></p>'; return; }
       var f = r.f || {}, o = r.office || {};
       var st = statusOf(r);
+      if (isAng(r)) { drawAng(r, f, o); return; }
       U.view.innerHTML =
         '<div class="page-head"><a class="btn ghost small" href="#/buero">‹ Liste</a><h1>' + esc(U.auftragTitle(r)) + '</h1>' + BADGE[st] + '</div>' +
         '<div class="big-actions"><button class="btn primary" id="bPrint">' + U.ICONS.print + '<span>Ansehen &amp; drucken</span></button>' +
@@ -136,6 +156,31 @@
         try {
           await S.Office.mark(r.id, 'billed', !o.billedAt);
           U.toast(o.billedAt ? 'Markierung entfernt' : 'Als abgerechnet markiert');
+        } catch (e) { U.toast('Nur mit Internet möglich: ' + e.message, true); }
+      };
+    }
+    function drawAng(r, f, o) {
+      var pre = function (t) { return String(t || '').trim() ? '<div class="card pad" style="white-space:pre-wrap">' + esc(t) + '</div>' : '<div class="card pad muted">–</div>'; };
+      U.view.innerHTML =
+        '<div class="page-head"><a class="btn ghost small" href="#/buero">‹ Liste</a><h1>Angebot – ' + esc(U.auftragTitle(r)) + '</h1>' + badge(r) + '</div>' +
+        '<div class="big-actions"><button class="btn primary" id="bPrint">' + U.ICONS.print + '<span>Ansehen &amp; drucken</span></button>' +
+        '<button class="btn" id="bBill">' + (o.billedAt ? '✓ Erledigt' : 'Als erledigt markieren') + '</button></div>' +
+        '<div class="card pad" style="margin-top:14px"><dl class="kv">' +
+        '<dt>Kunde</dt><dd>' + esc([f.kunde_name, f.kunde_name_zusatz].filter(Boolean).join(', ') || '–') + '</dd>' +
+        '<dt>Adresse</dt><dd>' + esc(f.kunde_adresse || '–') + '</dd>' +
+        '<dt>Datum</dt><dd>' + esc(U.isoToDe(f.datum_annahme) || '–') + '</dd>' +
+        '<dt>Geschickt</dt><dd>' + U.fmtDT(o.sharedAt) + '</dd>' +
+        '<dt>Gedruckt</dt><dd>' + (o.printedAt ? U.fmtDT(o.printedAt) + (o.printedBy ? ' (' + esc(o.printedBy) + ')' : '') : 'noch nicht') + '</dd>' +
+        '<dt>Erledigt</dt><dd>' + (o.billedAt ? U.fmtDT(o.billedAt) + (o.billedBy ? ' (' + esc(o.billedBy) + ')' : '') : 'noch nicht') + '</dd>' +
+        '</dl></div>' +
+        '<h2>Was soll gemacht werden</h2>' + pre(f.angebot_text) +
+        '<h2>Material</h2>' + pre(f.angebot_material) +
+        (r.customerId ? '<p><a class="btn ghost" href="#/ordner/' + encodeURIComponent(r.customerId) + '">' + U.ICONS.folder.replace('<svg', '<svg width="18" height="18"') + '<span>Kundenordner öffnen</span></a></p>' : '');
+      $('#bPrint').onclick = function () { U.showAuftragPdf([r], { onPrint: function () { markPrinted([r]); } }); };
+      $('#bBill').onclick = async function () {
+        try {
+          await S.Office.mark(r.id, 'billed', !o.billedAt);
+          U.toast(o.billedAt ? 'Markierung entfernt' : 'Als erledigt markiert');
         } catch (e) { U.toast('Nur mit Internet möglich: ' + e.message, true); }
       };
     }
