@@ -267,7 +267,7 @@
   var Auftraege = {
     all: async function () {
       var list = await DB.all('auftraege');
-      return list.filter(function (a) { return !a.deleted && a.kind !== 'profile' && a.kind !== 'nachfolge'; });
+      return list.filter(function (a) { return !a.deleted && a.kind !== 'profile' && a.kind !== 'nachfolge' && a.kind !== 'angebot'; });
     },
     get: function (id) { return DB.get('auftraege', id); },
     /** Speichern: mit dem gespeicherten Stand feldweise zusammenführen (Änderungen anderer Geräte bleiben erhalten).
@@ -795,6 +795,22 @@
     }
   };
 
+  /** Angebotsanfragen: Dominic beschreibt Arbeit + Material, das Büro druckt und schreibt das Angebot fertig.
+   *  Text/Material liegen in f, damit die Büro-Liste (officeList) sie ohne Backend-Änderung mitbekommt. */
+  var Angebote = {
+    all: async function () {
+      var list = await DB.all('auftraege');
+      return list.filter(function (a) { return a.kind === 'angebot' && !a.deleted; });
+    },
+    create: function (preset) {
+      return Object.assign({ id: uid('g-'), kind: 'angebot', createdAt: Date.now(), updatedAt: Date.now(), status: 'offen',
+        customerId: null, customerName: '',
+        f: { typ: 'angebot', art: 'Angebot', kunde_name: '', kunde_name_zusatz: '', kunde_adresse: '', datum_annahme: isoDate(new Date()),
+          angebot_text: '', angebot_material: '' } }, preset || {});
+    },
+    save: function (a) { return Auftraege.save(a); }
+  };
+
   async function syncAuftraege() {
     var list = await DB.all('auftraege');
     var dirty = list.filter(function (a) { return a._dirty; });
@@ -1063,7 +1079,7 @@
     addAuftragPhoto: addAuftragPhoto, removeAuftragPhoto: removeAuftragPhoto, Profile: Profile, Thumbs: Thumbs,
     loadPdfJs: loadPdfJs, shrinkImage: shrinkImage,
     Termine: Termine, Office: Office, Push: Push, refreshPing: refreshPing,
-    mergeSig: mergeSig, hasSig: hasSig, Nachfolge: Nachfolge, myName: myName, EditSession: EditSession,
+    mergeSig: mergeSig, hasSig: hasSig, Nachfolge: Nachfolge, Angebote: Angebote, myName: myName, EditSession: EditSession,
     on: Sync.on, emit: emit, uid: uid, isoDate: isoDate, base64ToBlob: base64ToBlob, blobToBase64: blobToBase64
   };
 })();
