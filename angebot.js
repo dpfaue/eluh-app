@@ -5,6 +5,7 @@
   var $ = U.$, $$ = U.$$, esc = U.esc;
 
   function custShort(a) { var f = a.f || {}; return f.kunde_name || U.parseCustomer(a.customerName || '').name || a.customerName || 'Ohne Kunde'; }
+  function hasMat(m) { return m && ['artnr', 'bez', 'menge', 'preis'].some(function (k) { return String(m[k] || '').trim(); }); }
   function firstLine(t) { t = String(t || '').trim().split('\n')[0]; return t.length > 70 ? t.slice(0, 68) + '…' : t; }
 
   /** Status aus Sicht von Dominic */
@@ -82,14 +83,25 @@
       '<section class="form-section card pad stack">' +
       '<div><div class="small muted">Kunde</div><div id="agCust"></div></div>' +
       '<label class="field"><span>Was soll gemacht werden?</span><textarea id="agText" rows="8" placeholder="z. B. Gastherme tauschen, Abgasanlage prüfen, Heizkörper im Bad versetzen…"></textarea></label>' +
-      '<label class="field"><span>Material</span><textarea id="agMat" rows="6" placeholder="Eine Position pro Zeile, z. B.&#10;Gas-Brennwerttherme 24 kW&#10;2x Heizkörperventil DN15"></textarea></label>' +
+      '<div><div class="field"><span>Material</span></div>' +
+      '<div class="mat-row ag-mat mat-head"><span>Art.-Nr.</span><span>Bezeichnung</span><span>Menge</span><span>Preis €</span><span></span></div>' +
+      '<div id="agMatRows"></div>' +
+      '<div class="btn-row" style="margin-top:8px"><button type="button" class="btn small" id="agAddRow">' + U.ICONS.plus + '<span>Position</span></button></div></div>' +
       '<div class="small muted" id="agSave"></div></section>' +
       '<div class="btn-row" id="agAct" style="margin-top:14px"></div>' +
       '<div class="btn-row" style="margin-top:18px"><button type="button" class="btn ghost danger small" id="agDel">Löschen</button></div>';
     var me = U.current();
     var idx = await S.Index.load();
     if (U.current() !== me || !$('#agText')) return;
-    var FIELDS = { angebot_text: '#agText', angebot_material: '#agMat' };
+    var FIELDS = { angebot_text: '#agText' };
+    // Material wie beim Arbeitsauftrag (nur Art.-Nr., Bezeichnung, Menge, Preis); alter Freitext wird einmalig übernommen
+    if (!Array.isArray(a.material)) a.material = [];
+    if (!a.material.some(hasMat) && String(a.f.angebot_material || '').trim()) {
+      a.material = String(a.f.angebot_material).split('\n').filter(function (l) { return l.trim(); }).map(function (l) { return { id: S.uid('m-'), bez: l.trim() }; });
+      a.f.angebot_material = '';
+    }
+    if (!a.material.length) a.material = [{ id: S.uid('m-') }, { id: S.uid('m-') }, { id: S.uid('m-') }];
+    window.RecMerge.ensureIds(a);
     var timer = null;
     var sess = new S.EditSession(a);
 
@@ -127,9 +139,11 @@
       drawConf();
     }
     function drawConf() {
-      U.conflictBox($('#agConf'), a, { angebot_text: 'Was soll gemacht werden?', angebot_material: 'Material', kunde_name: 'Kunde', kunde_adresse: 'Adresse' }, {
+      U.conflictBox($('#agConf'), a, { angebot_text: 'Was soll gemacht werden?', kunde_name: 'Kunde', kunde_adresse: 'Adresse',
+        m: { _: 'Material', artnr: 'Art.-Nr.', bez: 'Bezeichnung', menge: 'Menge', preis: 'Preis' } }, {
         apply: function (c) {
           var x = window.RecMerge.kind(c.k);
+          if (x.t === 'cell') { var ok = window.RecMerge.setValue(a, c.k, c.v); drawRows(); return ok; }
           if (x.t !== 'sub' || x.o !== 'f') { a[c.k] = c.v; return true; }
           a.f[x.s] = c.v;
           if (FIELDS[x.s] && $(FIELDS[x.s])) $(FIELDS[x.s]).value = c.v;
@@ -150,13 +164,44 @@
       a.f = a.f || {};
       sess.reset(a);
       Object.keys(FIELDS).forEach(function (k) { var el = $(FIELDS[k]); if (el && el !== ae && el.value !== (a.f[k] || '')) el.value = a.f[k] || ''; });
+      if (!Array.isArray(a.material) || !a.material.length) a.material = [{ id: S.uid('m-') }];
+      if (!(ae && ae.closest && ae.closest('#agMatRows'))) drawRows();
       drawConf(); drawCust(); drawAct();
     });
     function changed() { var el = $('#agSave'); if (el) el.textContent = 'Speichert…'; clearTimeout(timer); timer = setTimeout(persist, 500); }
     $('#agText').value = a.f.angebot_text || '';
-    $('#agMat').value = a.f.angebot_material || '';
     $('#agText').oninput = function () { a.f.angebot_text = this.value; changed(); };
-    $('#agMat').oninput = function () { a.f.angebot_material = this.value; changed(); };
+
+    function drawRows() {
+      var box = $('#agMatRows');
+      if (!box) return;
+      box.innerHTML = a.material.map(function (m, i) {
+        function cell(k, ph, extra) { return '<input data-m="' + i + '" data-k="' + k + '" value="' + esc(m[k] || '') + '" placeholder="' + ph + '" ' + (extra || '') + ' autocomplete="off">'; }
+        return '<div class="mat-row ag-mat" data-rid="' + esc(m.id || '') + '">' + cell('artnr', 'Art.-Nr.') + cell('bez', 'Bezeichnung') +
+          cell('menge', 'Menge', 'inputmode="decimal"') + cell('preis', 'Preis €', 'inputmode="decimal"') +
+          '<button type="button" class="del" data-del="' + i + '" aria-label="Position löschen">' + U.ICONS.close + '</button></div>';
+      }).join('');
+      $$('[data-m]', box).forEach(function (el) {
+        el.oninput = function () {
+          var row = a.material[Number(el.getAttribute('data-m'))];
+          if (row) { row[el.getAttribute('data-k')] = el.value; changed(); }
+        };
+      });
+      $$('[data-del]', box).forEach(function (b) {
+        b.onclick = function () {
+          a.material.splice(Number(b.getAttribute('data-del')), 1);
+          if (!a.material.length) a.material.push({ id: S.uid('m-') });
+          drawRows(); changed();
+        };
+      });
+    }
+    $('#agAddRow').onclick = function () {
+      a.material.push({ id: S.uid('m-') });
+      drawRows();
+      var last = $$('#agMatRows .mat-row').pop();
+      if (last) $('input', last).focus();
+    };
+    drawRows();
     U.onCleanup(function () { if (timer) persist(); });
 
     function drawAct() {
