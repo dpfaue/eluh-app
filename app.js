@@ -303,7 +303,7 @@
   }
 
   async function showAuftragPdf(recs, vopts) {
-    var title = recs.length === 1 ? auftragTitle(recs[0]) : recs.length + ' Arbeitsaufträge';
+    var title = recs.length === 1 ? (window.PdfGen.isAngebot(recs[0]) ? 'Angebot – ' : '') + auftragTitle(recs[0]) : recs.length + ' Arbeitsaufträge';
     var v = openViewer(title, Object.assign({ driveUrl: recs.length === 1 && recs[0].drive && recs[0].drive.url }, vopts || {}));
     try {
       var bytes = recs.length === 1 ? await window.PdfGen.buildFull(recs[0]) : await window.PdfGen.merge(recs);
@@ -428,7 +428,7 @@
   var routes = [];
   function route(re, fn, tab) { routes.push({ re: re, fn: fn, tab: tab }); }
 
-  var CHEF_ONLY = /^#\/(auftraege|auftrag\/|sync|nachfolge)/;
+  var CHEF_ONLY = /^#\/(auftraege|auftrag\/|sync|nachfolge|angebot)/;
   async function router() {
     var s = await S.Settings.get();
     var isBuero = s.role === 'buero';
@@ -500,7 +500,8 @@
   route(/^#\/auftraege$/, async function () {
     view.innerHTML =
       '<div class="page-head"><h1>Arbeitsaufträge</h1>' +
-      '<a class="btn primary" href="#/auftrag/neu">' + ICONS.plus + '<span>Neuer Auftrag</span></a></div>' +
+      '<div class="btn-row"><a class="btn" href="#/angebote" id="agLink">Angebote</a>' +
+      '<a class="btn primary" href="#/auftrag/neu">' + ICONS.plus + '<span>Neuer Auftrag</span></a></div></div>' +
       '<div class="stack">' +
       '<label class="search"><span class="sr" hidden>Suchen</span>' + ICONS.search + '<input class="input" id="q" type="search" placeholder="Kunde, Nr., Art, Text…" value="' + esc(listState.q) + '"></label>' +
       '<div class="chips" id="filters"></div>' +
@@ -523,6 +524,8 @@
       var list = await S.Auftraege.all();
       var ops = await S.Outbox.all();
       if (current !== me || !$('#list')) return;
+      var agOpen = (await S.Angebote.all()).filter(function (g) { return !(g.office && g.office.billedAt); }).length;
+      if ($('#agLink')) $('#agLink').textContent = 'Angebote' + (agOpen ? ' (' + agOpen + ')' : '');
       var today = S.isoDate(new Date());
       var minDate = listState.range === 'alle' ? '' : listState.range === 'heute' ? today : S.isoDate(new Date(Date.now() - Number(listState.range) * 864e5));
       var rows = [];
@@ -1563,6 +1566,8 @@
       if (isCustomer && s.role !== 'buero' && window.Nachfolge) {
         nfHtml = window.Nachfolge.noticeHtml(await window.Nachfolge.openFor(function (n) { return n.customerId === folderId; }), 'Noch offen (Nachfolgeaufträge):');
       }
+      var agHtml = '';
+      if (isCustomer && s.role !== 'buero' && window.Angebot) agHtml = window.Angebot.listHtml(await window.Angebot.forCustomer(folderId));
       var custOffline = customer && off.has(customer.id);
       var allOffline = s.offlineMode === 'alles';
       var ro = s.role === 'buero';
@@ -1576,13 +1581,14 @@
         (customer && !ro ? '<a class="btn primary" href="#/auftrag/neu?kunde=' + encodeURIComponent(customer.id) + '">' + ICONS.plus + '<span>Arbeitsauftrag</span></a>' : '') +
         (customer ? '<a class="btn" href="#/termine/neu?kunde=' + encodeURIComponent(customer.id) + '">' + ICONS.plus + '<span>Termin</span></a>' : '') +
         (customer && !ro ? '<button type="button" class="btn" id="nfNewCust">' + ICONS.plus + '<span>Nachfolgeauftrag</span></button>' : '') +
+        (customer && !ro && window.Angebot ? '<button type="button" class="btn" id="agNewCust">' + ICONS.plus + '<span>Angebot</span></button>' : '') +
         (ro ? '' : '<label class="btn">' + ICONS.camera + '<span>Foto aufnehmen</span><input type="file" accept="image/*" capture="environment" id="cam" hidden></label>' +
         '<label class="btn">' + ICONS.upload + '<span>Hochladen</span><input type="file" id="upl" multiple hidden></label>' +
         '<button class="btn" id="mkdir">Neuer Ordner</button>') +
         (customer && !allOffline && !ro ? '<button class="btn' + (custOffline ? ' primary' : '') + '" id="offTog">' + (custOffline ? '✓ Offline verfügbar' : 'Offline verfügbar machen') + '</button>' : '') +
         (folder.local ? '' : '<a class="btn ghost" target="_blank" rel="noopener" href="https://drive.google.com/drive/folders/' + esc(folder.id) + '">In Drive öffnen</a>') +
         '</div>' +
-        nfHtml +
+        nfHtml + agHtml +
         (auftraege.length ? '<h2>Arbeitsaufträge aus der App</h2><div class="list">' + auftraege.map(function (a) {
           return '<a class="row" href="#/auftrag/' + a.id + '"><span class="ico pdf">' + ICONS.pdf + '</span><span class="main"><span class="title" style="display:block">' +
             esc((a.f.art || 'Arbeitsauftrag') + (a.f.auftrags_nr ? ' · Nr. ' + a.f.auftrags_nr : '')) + '</span><span class="meta" style="display:block">' + isoToDe(auftragDate(a)) +
@@ -1614,6 +1620,8 @@
       if (ro) return;
       var nfb = $('#nfNewCust');
       if (nfb) nfb.onclick = function () { window.Nachfolge.create({ customerId: customer.id, customerName: customer.name }); };
+      var agb = $('#agNewCust');
+      if (agb) agb.onclick = function () { window.Angebot.create(customer); };
       $('#cam').onchange = function () { up(this.files, true); this.value = ''; };
       $('#upl').onchange = function () { up(this.files, false); this.value = ''; };
       $('#mkdir').onclick = function () {
